@@ -11,6 +11,7 @@ include_directories(include)
 add_executable(keplerian_tsp
     src/main.cpp
     src/Problem.cpp
+    src/Solution.cpp
 )
 
 include(CTest)
@@ -26,5 +27,14 @@ if(BUILD_TESTING)
             NAME parser_${test_case}
             COMMAND problem_tests ${test_case} "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
         )
+    endforeach()
+
+    add_executable(solution_tests
+        tests/SolutionTests.cpp
+        src/Solution.cpp
+    )
+
+    foreach(test_case IN ITEMS valid permutation lengths timing nonfinite boundaries)
+        add_test(NAME solution_${test_case} COMMAND solution_tests ${test_case})
     endforeach()
 endif()
