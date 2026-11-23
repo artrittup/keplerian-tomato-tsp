@@ -75,11 +75,20 @@ std::vector<std::size_t> beam_detail::selectTemporal(const std::vector<ArrivalCa
 
 namespace
 {
+struct CheckedLeg
+{
+    int destination;
+    LegTiming timing;
+    PartialRoute child;
+    std::size_t proposalOrder;
+};
+
 struct RankedRoute
 {
     PartialRoute route;
     double score;
     std::size_t proposalOrder;
+    std::optional<CheckedLeg> witness = std::nullopt;
 };
 
 bool ranksBefore(const RankedRoute &left, const RankedRoute &right)
@@ -145,7 +154,8 @@ public:
     Search(const Problem &problem, BeamSearchResult &result)
         : problem_(problem), result_(result), config_(result.config), stats_(result.stats),
           legCount_(problem.tomatoes.size() - 1), width_(std::min(config_.beamWidth, problem.tomatoes.size())),
-          orderRandom_(config_.seed), timingSampler_(orderRandom_())
+          orderRandom_(config_.seed), timingSampler_(orderRandom_()),
+          lookaheadOrderRandom_(~config_.seed), lookaheadSampler_(lookaheadOrderRandom_())
     {
         startOrder_.reserve(problem.tomatoes.size());
         for (std::size_t i = 0; i < problem.tomatoes.size(); ++i)
@@ -182,7 +192,8 @@ public:
 
             while (!beam.empty() && beam.front().route.remainingLegs() != 0)
             {
-                if (stats_.evaluationsAttempted == limit - reserve)
+                if (stats_.evaluationsAttempted == limit - reserve &&
+                    std::none_of(beam.begin(), beam.end(), [](const auto &entry) { return entry.witness.has_value(); }))
                 {
                     attemptLimited_ = true;
                     break;
@@ -256,7 +267,7 @@ private:
                static_cast<double>(route.exceptionsUsed()) / static_cast<double>(legCount_);
     }
 
-    std::vector<int> destinations(const PartialRoute &parent, BeamDepthStats &depth)
+    std::vector<int> unvisited(const PartialRoute &parent) const
     {
         std::vector<int> candidates;
         candidates.reserve(parent.remainingLegs());
@@ -268,6 +279,12 @@ private:
                 candidates.push_back(tomato);
             }
         }
+        return candidates;
+    }
+
+    std::vector<int> destinations(const PartialRoute &parent, BeamDepthStats &depth)
+    {
+        auto candidates = unvisited(parent);
         depth.visitedDestinationsSkipped += problem_.tomatoes.size() - candidates.size();
         std::shuffle(candidates.begin(), candidates.end(), orderRandom_);
         const auto count = std::min(candidates.size(), config_.destinationsPerRoute);
@@ -308,22 +325,104 @@ private:
         }
     }
 
-    std::optional<LegTiming> sampleTiming(const PartialRoute &parent, double localSlack, std::size_t sample)
+    double localSlack(const PartialRoute &parent) const
+    {
+        const double daysPerLeg = (problem_.maxTotalTime - parent.arrivalDays()) /
+                                  static_cast<double>(parent.remainingLegs());
+        return std::max(0.0, daysPerLeg - problem_.minTimeOfFlight);
+    }
+
+    std::optional<LegTiming> sampleTiming(TimingSampler &sampler, const PartialRoute &parent, double slack,
+                                          std::size_t sample, std::size_t sampleCount)
     {
         if (sample % 4 == 3)
         {
-            return timingSampler_.sample(parent);
+            return sampler.sample(parent);
         }
         if (config_.timingStrategy == BeamTimingStrategy::Stratified)
         {
-            const auto localSamples = config_.samplesPerDestination - config_.samplesPerDestination / 4;
-            return timingSampler_.sampleStratified(parent, localSlack, sample - sample / 4, localSamples);
+            const auto localSamples = sampleCount - sampleCount / 4;
+            return sampler.sampleStratified(parent, slack, sample - sample / 4, localSamples);
         }
-        return timingSampler_.sample(parent, localSlack);
+        return sampler.sample(parent, slack);
     }
 
-    std::vector<RankedRoute> selectFrontier(std::vector<RankedRoute> candidates, bool temporal, BeamDepthStats &depth)
+    void probe(RankedRoute &candidate, std::size_t limit, BeamDepthStats &depth)
     {
+        auto targets = unvisited(candidate.route);
+        std::shuffle(targets.begin(), targets.end(), lookaheadOrderRandom_);
+        const auto targetCount = std::min(targets.size(), config_.destinationsPerRoute);
+        const double slack = localSlack(candidate.route);
+        for (std::size_t i = 0; i < config_.lookaheadProbes && stats_.evaluationsAttempted < limit; ++i)
+        {
+            const auto timing = sampleTiming(lookaheadSampler_, candidate.route, slack, i, config_.lookaheadProbes);
+            if (!timing)
+            {
+                break;
+            }
+            const int target = targets[i % targetCount];
+            auto extension = candidate.route.extend(target, *timing);
+            if (!extension.transfer)
+            {
+                continue;
+            }
+            ++stats_.evaluationsAttempted;
+            ++stats_.lookaheadEvaluations;
+            ++depth.lookaheadEvaluations;
+            if (extension.route)
+            {
+                ++stats_.lookaheadAccepted;
+                candidate.witness = CheckedLeg{target, *timing, std::move(*extension.route),
+                                               stats_.evaluationsAttempted};
+                return;
+            }
+            ++stats_.lookaheadRejected;
+            stats_.lookaheadDeltaVRejections += extension.status == RouteExtensionStatus::DeltaVLimitExceeded;
+            stats_.lookaheadExceptionBudgetRejections +=
+                extension.status == RouteExtensionStatus::ExceptionBudgetExceeded;
+        }
+    }
+
+    void selectGuided(std::vector<RankedRoute> &candidates, std::size_t limit,
+                      std::size_t expansionCalls, BeamDepthStats &depth)
+    {
+        if (candidates.size() <= width_)
+        {
+            return;
+        }
+
+        std::sort(candidates.begin(), candidates.end(), ranksBefore);
+        // Limit extra work to one tenth of the calls made to generate this level.
+        const auto quota = std::min(expansionCalls / 10, limit - stats_.evaluationsAttempted);
+        const auto probeLimit = stats_.evaluationsAttempted + quota;
+        std::size_t witnessed = 0;
+        for (auto &candidate : candidates)
+        {
+            if (stats_.evaluationsAttempted == probeLimit || witnessed == width_)
+            {
+                break;
+            }
+            probe(candidate, probeLimit, depth);
+            witnessed += candidate.witness.has_value();
+        }
+
+        // An unsuccessful probe is inconclusive. Keep such candidates in baseline order as fallback.
+        const auto witnessedFirst = [](const RankedRoute &entry) { return entry.witness.has_value(); };
+        stats_.lookaheadPromoted += static_cast<std::size_t>(
+            std::count_if(candidates.begin() + width_, candidates.end(), witnessedFirst));
+        std::stable_partition(candidates.begin(), candidates.end(), witnessedFirst);
+        depth.widthPruned += candidates.size() - width_;
+        candidates.erase(candidates.begin() + width_, candidates.end());
+    }
+
+    std::vector<RankedRoute> selectFrontier(std::vector<RankedRoute> candidates, bool temporal, bool guided,
+                                           std::size_t limit, std::size_t beforeExpansion, BeamDepthStats &depth)
+    {
+        if (guided)
+        {
+            selectGuided(candidates, limit, stats_.evaluationsAttempted - beforeExpansion, depth);
+            return candidates;
+        }
         if (!temporal || candidates.empty())
         {
             return candidates;
@@ -367,19 +466,51 @@ private:
         return frontier;
     }
 
-    std::vector<RankedRoute> expand(const std::vector<RankedRoute> &beam, std::size_t limit, BeamDepthStats &depth)
+    void offerExtension(std::vector<RankedRoute> &next, PartialRoute child, std::size_t order,
+                        std::size_t capacity, bool temporal, BeamDepthStats &depth)
+    {
+        ++stats_.successfulExtensions;
+        ++depth.accepted;
+        recordLatest(depth.latestAcceptedArrivalDays, child.arrivalDays());
+        stats_.deepestPrefix = std::max(stats_.deepestPrefix, child.prefix().visitingOrder.size());
+        stats_.completeRoutesFound += child.remainingLegs() == 0;
+        const double priority = score(child);
+        RankedRoute candidate{std::move(child), priority, order};
+        if (temporal)
+        {
+            next.push_back(std::move(candidate));
+        }
+        else
+        {
+            keepCandidate(next, std::move(candidate), capacity, depth);
+        }
+    }
+
+    std::vector<RankedRoute> expand(std::vector<RankedRoute> &beam, std::size_t limit, BeamDepthStats &depth)
     {
         std::vector<RankedRoute> next;
-        next.reserve(width_);
+        const bool incomplete = beam.front().route.remainingLegs() > 1;
         const bool temporal = config_.selectionStrategy == BeamSelectionStrategy::Temporal &&
-                              width_ > 1 && beam.front().route.remainingLegs() > 1;
+                              width_ > 1 && incomplete;
+        const bool guided = config_.selectionStrategy == BeamSelectionStrategy::Lookahead && incomplete;
+        const std::size_t capacity = guided ? width_ + std::min(width_, problem_.tomatoes.size() - width_) : width_;
+        const std::size_t beforeExpansion = stats_.evaluationsAttempted;
+        next.reserve(capacity);
+        for (auto &entry : beam)
+        {
+            if (entry.witness)
+            {
+                ++stats_.lookaheadReused;
+                offerExtension(next, std::move(entry.witness->child), entry.witness->proposalOrder, capacity,
+                               temporal, depth);
+            }
+        }
+
         for (const auto &entry : beam)
         {
             ++depth.prefixesExamined;
             const auto &parent = entry.route;
-            const double daysPerLeg = (problem_.maxTotalTime - parent.arrivalDays()) /
-                                      static_cast<double>(parent.remainingLegs());
-            const double localSlack = std::max(0.0, daysPerLeg - problem_.minTimeOfFlight);
+            const double slack = localSlack(parent);
             for (const int destination : destinations(parent, depth))
             {
                 for (std::size_t i = 0; i < config_.samplesPerDestination; ++i)
@@ -387,13 +518,19 @@ private:
                     if (stats_.evaluationsAttempted == limit)
                     {
                         attemptLimited_ = true;
-                        return selectFrontier(std::move(next), temporal, depth);
+                        return selectFrontier(std::move(next), temporal, guided, limit, beforeExpansion, depth);
                     }
-                    const auto timing = sampleTiming(parent, localSlack, i);
+                    const auto timing = sampleTiming(timingSampler_, parent, slack, i, config_.samplesPerDestination);
                     if (!timing)
                     {
                         ++depth.destinationsWithoutTiming;
                         break;
+                    }
+                    if (entry.witness && entry.witness->destination == destination &&
+                        entry.witness->timing.departureDays == timing->departureDays &&
+                        entry.witness->timing.flightDays == timing->flightDays)
+                    {
+                        continue;
                     }
                     auto extension = parent.extend(destination, *timing);
                     if (extension.transfer)
@@ -409,26 +546,12 @@ private:
                         continue;
                     }
 
-                    ++stats_.successfulExtensions;
-                    ++depth.accepted;
-                    auto &child = *extension.route;
-                    recordLatest(depth.latestAcceptedArrivalDays, child.arrivalDays());
-                    stats_.deepestPrefix = std::max(stats_.deepestPrefix, child.prefix().visitingOrder.size());
-                    stats_.completeRoutesFound += child.remainingLegs() == 0;
-                    const double priority = score(child);
-                    RankedRoute candidate{std::move(child), priority, stats_.evaluationsAttempted};
-                    if (temporal)
-                    {
-                        next.push_back(std::move(candidate));
-                    }
-                    else
-                    {
-                        keepCandidate(next, std::move(candidate), width_, depth);
-                    }
+                    offerExtension(next, std::move(*extension.route), stats_.evaluationsAttempted, capacity,
+                                   temporal, depth);
                 }
             }
         }
-        return selectFrontier(std::move(next), temporal, depth);
+        return selectFrontier(std::move(next), temporal, guided, limit, beforeExpansion, depth);
     }
 
     void validateComplete(const std::vector<RankedRoute> &beam, std::size_t limit)
@@ -449,11 +572,14 @@ private:
             ++stats_.completeRoutesValidated;
             stats_.evaluationsAttempted += evaluation.legs.size();
             stats_.validationEvaluations += evaluation.legs.size();
-            if (evaluation.isFeasible() && evaluation.missionCompletionDays &&
-                (!result_.bestCompletionDays || *evaluation.missionCompletionDays < *result_.bestCompletionDays))
+            if (evaluation.isFeasible() && evaluation.missionCompletionDays)
             {
-                result_.bestCompletionDays = evaluation.missionCompletionDays;
-                result_.bestSolution = std::move(complete->solution);
+                ++stats_.completeFeasibleRoutes;
+                if (!result_.bestCompletionDays || *evaluation.missionCompletionDays < *result_.bestCompletionDays)
+                {
+                    result_.bestCompletionDays = evaluation.missionCompletionDays;
+                    result_.bestSolution = std::move(complete->solution);
+                }
             }
         }
     }
@@ -466,6 +592,8 @@ private:
     std::size_t width_;
     std::mt19937_64 orderRandom_;
     TimingSampler timingSampler_;
+    std::mt19937_64 lookaheadOrderRandom_;
+    TimingSampler lookaheadSampler_;
     std::vector<int> startOrder_;
     std::size_t nextStart_ = 0;
     bool attemptLimited_ = false;
@@ -479,7 +607,8 @@ BeamSearchResult BeamSearch::run(const Problem &problem, const BeamSearchConfig 
     result.config = config;
     if (config.beamWidth == 0 || config.destinationsPerRoute == 0 || config.samplesPerDestination == 0 ||
         config.restartCount == std::numeric_limits<std::size_t>::max() ||
-        !std::isfinite(config.arrivalBinDays) || config.arrivalBinDays <= 0.0)
+        !std::isfinite(config.arrivalBinDays) || config.arrivalBinDays <= 0.0 ||
+        (config.selectionStrategy == BeamSelectionStrategy::Lookahead && config.lookaheadProbes == 0))
     {
         result.stop = BeamSearchStop::InvalidConfig;
     }

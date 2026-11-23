@@ -18,7 +18,8 @@ enum class BeamTimingStrategy
 enum class BeamSelectionStrategy
 {
     Baseline,
-    Temporal
+    Temporal,
+    Lookahead
 };
 
 struct BeamSearchConfig
@@ -33,6 +34,7 @@ struct BeamSearchConfig
     BeamTimingStrategy timingStrategy = BeamTimingStrategy::Baseline;
     BeamSelectionStrategy selectionStrategy = BeamSelectionStrategy::Baseline;
     double arrivalBinDays = 1.0; // Maximum width of each preferred temporal bin.
+    std::size_t lookaheadProbes = 8; // Maximum probes per shortlisted prefix.
 };
 
 enum class BeamSearchStop
@@ -50,6 +52,8 @@ struct BeamDepthStats
 {
     std::size_t prefixesExamined = 0;
     std::size_t evaluations = 0;
+    // Probe calls are recorded here at the level where their prefix was selected.
+    std::size_t lookaheadEvaluations = 0;
     std::size_t accepted = 0;
     std::size_t rejected = 0;
     std::size_t invalidTiming = 0;
@@ -88,6 +92,13 @@ struct BeamSearchStats
     // Actual TransferSolver calls, including failures and full route validation.
     std::size_t evaluationsAttempted = 0;
     std::size_t validationEvaluations = 0;
+    std::size_t lookaheadEvaluations = 0;
+    std::size_t lookaheadAccepted = 0;
+    std::size_t lookaheadRejected = 0;
+    std::size_t lookaheadReused = 0; // Also included in successfulExtensions, with no additional call.
+    std::size_t lookaheadPromoted = 0; // Witnessed prefixes that would miss the baseline-width cutoff.
+    std::size_t lookaheadDeltaVRejections = 0;
+    std::size_t lookaheadExceptionBudgetRejections = 0;
     std::size_t successfulExtensions = 0;
     std::size_t rejectedExtensions = 0;
     std::size_t transferFailures = 0;
@@ -99,6 +110,7 @@ struct BeamSearchStats
     std::size_t attemptsLimitedByBudget = 0;
     std::size_t completeRoutesFound = 0; // Complete prefixes before pruning or validation.
     std::size_t completeRoutesValidated = 0;
+    std::size_t completeFeasibleRoutes = 0;
     std::vector<int> startingTomatoes;
     // Entry zero contains extensions from one visited tomato. Validation calls are tracked separately.
     std::vector<BeamDepthStats> byDepth;

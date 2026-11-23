@@ -364,6 +364,108 @@ void testTemporalReplay()
     require(BeamSearch::run(problem, config).stop == BeamSearchStop::InvalidConfig, "Bin width must be positive");
 }
 
+void testLookaheadBudget()
+{
+    auto config = singlePath();
+    config.selectionStrategy = BeamSelectionStrategy::Lookahead;
+    config.destinationsPerRoute = 2;
+    config.samplesPerDestination = 6;
+    config.maxEvaluations = 15;
+
+    const auto problem = circularProblem(3);
+    const auto result = BeamSearch::run(problem, config);
+    require(result.bestSolution && result.stats.evaluationsAttempted == 15 &&
+            result.stats.lookaheadEvaluations == 1 && result.stats.lookaheadAccepted == 1 &&
+            result.stats.lookaheadReused == 1 && result.stats.validationEvaluations == 2 &&
+            result.stats.completeFeasibleRoutes == 1,
+            "Reuse an exact witness at the construction limit and still reserve full validation");
+
+    config.maxEvaluations = 14;
+    const auto limited = BeamSearch::run(problem, config);
+    require(!limited.bestSolution && limited.stop == BeamSearchStop::EvaluationLimit &&
+            limited.stats.evaluationsAttempted == 12 && limited.stats.lookaheadEvaluations == 0 &&
+            limited.stats.validationEvaluations == 0, "Lookahead cannot spend the validation reserve");
+
+    auto blocked = problem;
+    for (auto &tomato : blocked.tomatoes)
+    {
+        tomato.a = 0.0;
+    }
+    config.maxEvaluations = 100;
+    const auto deadEnd = BeamSearch::run(blocked, config);
+    require(deadEnd.stats.evaluationsAttempted == 12 && deadEnd.stats.rejectedExtensions == 12 &&
+            deadEnd.stats.lookaheadEvaluations == 0 && deadEnd.stop == BeamSearchStop::AttemptsExhausted,
+            "An empty shortlist must spend no lookahead calls");
+}
+
+void testLookaheadReplay()
+{
+    auto config = singlePath();
+    config.beamWidth = 2;
+    config.destinationsPerRoute = 4;
+    config.samplesPerDestination = 8;
+    config.seed = 7;
+    config.maxEvaluations = 350;
+    config.selectionStrategy = BeamSelectionStrategy::Lookahead;
+    config.timingStrategy = BeamTimingStrategy::Stratified;
+    const auto problem = circularProblem();
+    const auto a = BeamSearch::run(problem, config);
+    const auto b = BeamSearch::run(problem, config);
+    require(a.bestSolution && b.bestSolution &&
+            a.bestSolution->visitingOrder == b.bestSolution->visitingOrder &&
+            a.bestSolution->departureTimes == b.bestSolution->departureTimes &&
+            a.bestSolution->timesOfFlight == b.bestSolution->timesOfFlight &&
+            a.stats.evaluationsAttempted == b.stats.evaluationsAttempted &&
+            a.stats.lookaheadEvaluations > 0 && a.stats.lookaheadEvaluations == b.stats.lookaheadEvaluations &&
+            a.stats.lookaheadReused > 0 && a.stats.lookaheadReused == b.stats.lookaheadReused &&
+            a.stats.peakBeamSize <= config.beamWidth, "Fixed seeds must reproduce funded lookahead and its route");
+
+    std::size_t primary = 0, probes = 0;
+    for (const auto &depth : a.stats.byDepth)
+    {
+        require(depth.lookaheadEvaluations <= depth.evaluations / 10 &&
+                depth.accepted == depth.retained + depth.sameEndpointPruned + depth.widthPruned,
+                "The per-level probe quota and pruning accounting must hold");
+        primary += depth.evaluations;
+        probes += depth.lookaheadEvaluations;
+    }
+    require(primary + probes + a.stats.validationEvaluations == a.stats.evaluationsAttempted &&
+            probes == a.stats.lookaheadAccepted + a.stats.lookaheadRejected &&
+            a.stats.lookaheadAccepted == a.stats.lookaheadReused,
+            "Probe calls, promoted witnesses and validation must reconcile without a second call");
+}
+
+void testLookaheadPromotion()
+{
+    auto problem = circularProblem();
+    for (std::size_t i = 2; i < problem.tomatoes.size(); ++i)
+    {
+        problem.tomatoes[i].a = 20000000.0;
+    }
+    // The two-tomato orbit can produce an inexpensive prefix with no inexpensive next move.
+    auto config = singlePath();
+    config.beamWidth = 2;
+    config.destinationsPerRoute = 5;
+    config.samplesPerDestination = 8;
+    config.lookaheadProbes = 3;
+    config.maxEvaluations = 500;
+    config.selectionStrategy = BeamSelectionStrategy::Lookahead;
+    config.timingStrategy = BeamTimingStrategy::Stratified;
+    for (std::uint64_t seed = 0; seed < 16; ++seed)
+    {
+        config.seed = seed;
+        const auto result = BeamSearch::run(problem, config);
+        if (result.stats.lookaheadPromoted != 0)
+        {
+            require(result.stats.lookaheadAccepted > 0 && result.stats.lookaheadRejected > 0 &&
+                    result.stats.lookaheadReused > 0 && result.stats.deepestPrefix == 4 &&
+                    !result.bestSolution, "A sampled continuation can promote a prefix without making the route feasible");
+            return;
+        }
+    }
+    require(false, "Lookahead should promote a witnessed prefix over a higher-ranked unconfirmed prefix");
+}
+
 struct TestCase
 {
     std::string_view name;
@@ -381,7 +483,10 @@ constexpr TestCase cases[] = {
     {"stratified", testStratifiedTiming},
     {"diagnostics", testDiagnostics},
     {"temporal_bins", testTemporalBins},
-    {"temporal_replay", testTemporalReplay}
+    {"temporal_replay", testTemporalReplay},
+    {"lookahead_budget", testLookaheadBudget},
+    {"lookahead_replay", testLookaheadReplay},
+    {"lookahead_promotion", testLookaheadPromotion}
 };
 }
 

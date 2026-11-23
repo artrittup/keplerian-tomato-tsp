@@ -119,7 +119,7 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()
-        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay)
+        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay lookahead_budget lookahead_replay lookahead_promotion)
             add_test(NAME beam_${test_case} COMMAND beam_search_tests ${test_case})
         endforeach()
         add_test(NAME beam_cli COMMAND keplerian_tsp --beam-search

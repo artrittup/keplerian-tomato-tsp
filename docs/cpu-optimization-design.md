@@ -193,6 +193,40 @@ To reproduce a fixed-budget pair, run the following from the project root and ch
 ./build/transfer-x64/keplerian_tsp.exe --beam-search --beam-width 6 --destinations 16 --samples 12 --seed 0 --restarts 0 --max-evaluations 8048 --policy strict --timing baseline --selection temporal --arrival-bin-days 1 --diagnostics
 ```
 
+### Constraint-guided one-step lookahead
+
+The earlier searches accepted many individual transfers and then ran out of sampled continuations. An accepted leg fixes the next endpoint and its absolute arrival epoch. It also removes a destination from the remaining set and may spend an exception. The previous score measured arrival and exceptions but contained no evidence about the next feasible transfer. This matters when acceptable transfers lie in narrow windows. A sampled terminal frontier with no admissible legs gives no proof about untested destinations, timings, or routes.
+
+Enable the new selector with `--selection lookahead`. Baseline and temporal selection and both timing modes remain available. At an incomplete level the search keeps a shortlist of up to twice the beam width, with one prefix per endpoint under the original rank. If no selection is necessary because the shortlist fits in the beam, it makes no probes. Otherwise it visits candidates in rank order. For each candidate it checks up to `--lookahead-probes` proposals (default 8) across shuffled unvisited destinations, using the selected timing sampler with a separate seeded stream. It uses `PartialRoute::extend` for the actual solver call, time constraints, and Δv classification.
+
+Stop probing a candidate on its first accepted continuation. Prefer witnessed candidates and fill any remaining slots in the original rank order. A failed probe is inconclusive. Stop probing the level once the beam can be filled with witnessed candidates, the shared budget stops the search, or the level has spent one probe call per ten primary calls. The next level reuses each retained witness as a candidate at its exact timing and skips a duplicate of that exact leg if sampled again on the same prefix. All witnesses are checked legs. A complete route must still pass `SolutionEvaluator`. Probe success gives evidence for one next leg only.
+
+Let `B` be beam width, `N` tomato count, `K` the per-prefix probe cap, and `A` the number of primary orbital calls made to generate a level. The shortlist and witnesses use `O(BN)` space. There are at most `min(2BK, floor(A/10), remaining construction budget)` extra orbital calls at the level. Candidate destination enumeration is `O(BN)`, rank sorting is `O(B log B)`, and successful probes can each copy a route in `O(N)`. The existing allowance for full-route validation remains reserved. A reused witness counts as an extension and adds zero new calls. The CLI reports accepted and rejected orbital calls from construction and probes, with validation calls counted separately.
+
+#### ESA easy experiment
+
+The Windows x64 Release runs used the strongest previous baseline for this instance, which was stratified timing with baseline selection. Both selectors used width 12, 24 destinations, 16 timing samples, strict Δv, and seeds 0, 1 and 7. The fixed cap was 48,048 calls, including a 48-call reserve, so each run spent exactly 48,000 actual calls and reached 12 tomatoes. The baseline accepted 21,165 transfers and rejected 122,835 across the three runs. Lookahead accepted 21,181 and rejected 122,819, including 3,139 probe calls. The fixed runs stopped at the evaluation allowance.
+
+The longer single-attempt runs used a 200,000-call cap. Even a full-width pass through all depths with these settings would make at most 168,192 primary calls. The 10% probe allowance and up to 576 validation calls still fit this cap. Each search actually stopped with an empty frontier well below the cap. The later matched checkpoints reran each pair at the earlier stopping call count plus 48 reserved calls.
+
+| Seed | Matched calls per selector | Baseline accepted / rejected | Lookahead accepted / rejected | Probe calls | Baseline / lookahead depth | Baseline / lookahead seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 69,648 | 8,164 / 61,484 | 8,875 / 60,773 | 1,296 | 16 / 17 | 0.353 / 0.343 |
+| 1 | 61,569 | 6,694 / 54,875 | 5,807 / 55,762 | 1,281 | 14 / 16 | 0.296 / 0.283 |
+| 7 | 66,420 | 8,205 / 58,215 | 7,834 / 58,586 | 1,140 | 16 / 16 | 0.331 / 0.323 |
+
+The matched baselines reached their allowances. Lookahead exhausted its frontiers at those counts. In the unrestricted pairs, baseline depths were 18, 15, and 17, using 73,344, 62,592, and 70,656 calls. Lookahead depths were 17, 16, and 16, using 69,648, 61,569, and 66,420 calls. A three-attempt seed-1 run with a 600,000-call cap reached 18 in both modes. Baseline used 195,840 calls (0.954 s) and lookahead used 203,612 (0.992 s), including 4,316 probes. Both exhausted their frontiers. No run completed a route, so there was no feasible completion time.
+
+Across the longer single-attempt lookahead runs, 332 of 3,717 probes succeeded (8.93%) and all 332 witnesses were reused. The probes promoted 91 candidates past the original beam cutoff. Among failed probes, 3,204 exceeded the Δv ceiling and 181 exceeded the exception budget. The six terminal levels had 2,304 primary calls, of which 2,194 exceeded the ceiling and 110 exceeded the remaining exception budget. Lookahead improved two late matched checkpoints by one and two visits and tied the third. It gave no gain at the fixed checkpoint or in the multi-start run. Many probes found no witness, and evidence for a single option could not preserve connectivity to the rest of the unvisited set.
+
+The next construction experiment should reuse transfer work across routes. Build a sparse, time-expanded graph of exactly evaluated feasible arcs, indexed by source, destination, and departure window. Keep the original departure and arrival epochs on each arc. Allow a connection only if the next exact departure follows the previous arrival, the destination is still unvisited, and the exception budget fits. Use bounded backtracking with reachability checks on that sampled graph to choose and revise order and timing together. Verify complete routes with the existing evaluator. Disconnected sampled windows identify where to spend a separate refinement budget. They cannot certify global infeasibility.
+
+To reproduce the fixed pair, run from the repository root and change only `--selection`.
+
+```powershell
+./build/transfer-x64/keplerian_tsp.exe --beam-search --beam-width 12 --destinations 24 --samples 16 --seed 0 --max-evaluations 48048 --restarts 0 --policy strict --timing stratified --selection lookahead --lookahead-probes 8 --diagnostics
+```
+
 ## Search guidance for infeasible candidates
 
 Keep exploratory candidates separate from the feasible incumbent. Discard a structurally invalid decode that cannot be repaired. For structurally valid candidates with valid problem limits, use the per-leg statuses and raw costs to compute this lexicographic search key:

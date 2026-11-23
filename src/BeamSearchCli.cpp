@@ -69,6 +69,11 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
             config.selectionStrategy = BeamSelectionStrategy::Temporal;
             return true;
         }
+        if (value == "lookahead")
+        {
+            config.selectionStrategy = BeamSelectionStrategy::Lookahead;
+            return true;
+        }
         return false;
     }
     if (name == "--arrival-bin-days")
@@ -88,7 +93,8 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
         {"--destinations", &BeamSearchConfig::destinationsPerRoute},
         {"--samples", &BeamSearchConfig::samplesPerDestination},
         {"--max-evaluations", &BeamSearchConfig::maxEvaluations},
-        {"--restarts", &BeamSearchConfig::restartCount}
+        {"--restarts", &BeamSearchConfig::restartCount},
+        {"--lookahead-probes", &BeamSearchConfig::lookaheadProbes}
     };
     for (const auto &option : sizeOptions)
     {
@@ -104,7 +110,8 @@ void printUsage(std::ostream &out)
 {
     out << "Usage: keplerian_tsp --beam-search [--input FILE] [--beam-width N] [--destinations N]\n"
         << "       [--samples N] [--seed N] [--max-evaluations N] [--restarts N] [--policy strict|published]\n"
-        << "       [--timing baseline|stratified] [--selection baseline|temporal] [--arrival-bin-days DAYS]\n"
+        << "       [--timing baseline|stratified] [--selection baseline|temporal|lookahead]\n"
+        << "       [--arrival-bin-days DAYS] [--lookahead-probes N]\n"
         << "       [--diagnostics]\n";
 }
 
@@ -116,7 +123,7 @@ void printDiagnostics(const BeamSearchStats &stats)
          << "orbital_input,no_lambert,numerical,invalid_destination,duplicate_destination,visited_skipped,"
          << "destinations_clipped,no_timing,endpoint_pruned,width_pruned,retained,retained_at_exception_limit,"
          << "latest_accepted_day,latest_retained_day,arrival_lt_2d,arrival_2_to_4d,arrival_4_to_8d,"
-         << "arrival_8_to_16d,arrival_ge_16d\n";
+         << "arrival_8_to_16d,arrival_ge_16d,lookahead_evaluations\n";
     for (std::size_t i = 0; i < stats.byDepth.size(); ++i)
     {
         const auto &d = stats.byDepth[i];
@@ -140,7 +147,7 @@ void printDiagnostics(const BeamSearchStats &stats)
         {
             cout << ',' << count;
         }
-        cout << '\n';
+        cout << ',' << d.lookaheadEvaluations << '\n';
     }
 
     cout << "\nTiming bins (CSV)\ntiming,min_days,max_days,evaluations,accepted,delta_v\n";
@@ -162,6 +169,8 @@ void printResult(const BeamSearchResult &result)
 {
     const auto &config = result.config;
     const auto &stats = result.stats;
+    const char *selection = config.selectionStrategy == BeamSelectionStrategy::Lookahead ? "lookahead" :
+                            config.selectionStrategy == BeamSelectionStrategy::Temporal ? "temporal" : "baseline";
     using std::cout;
     cout << "Seed: " << config.seed << "\n"
          << "Beam width: " << config.beamWidth << "\n"
@@ -171,9 +180,9 @@ void printResult(const BeamSearchResult &result)
          << "Delta-V policy: " << (config.policy == DeltaVPolicy::Strict ? "strict" : "published") << "\n"
          << "Timing strategy: " << (config.timingStrategy == BeamTimingStrategy::Stratified ? "stratified" : "baseline")
          << "\n"
-         << "Selection strategy: "
-         << (config.selectionStrategy == BeamSelectionStrategy::Temporal ? "temporal" : "baseline") << "\n"
+         << "Selection strategy: " << selection << "\n"
          << "Maximum arrival bin width (days): " << config.arrivalBinDays << "\n"
+         << "Lookahead probes per prefix: " << config.lookaheadProbes << "\n"
          << "Attempts started: " << stats.attemptsStarted << "\n"
          << "Attempts limited by budget: " << stats.attemptsLimitedByBudget << "\n"
          << "Starting tomatoes:";
@@ -183,6 +192,18 @@ void printResult(const BeamSearchResult &result)
     }
     cout << "\nOrbital evaluations: " << stats.evaluationsAttempted << " / " << config.maxEvaluations << "\n"
          << "Full-validation evaluations: " << stats.validationEvaluations << "\n"
+         << "Lookahead evaluations: " << stats.lookaheadEvaluations << "\n"
+         << "Lookahead accepted: " << stats.lookaheadAccepted << "\n"
+         << "Lookahead rejected: " << stats.lookaheadRejected << "\n"
+         << "Lookahead witnesses reused: " << stats.lookaheadReused << "\n"
+         << "Lookahead candidates promoted: " << stats.lookaheadPromoted << "\n"
+         << "Lookahead Delta-V rejections: " << stats.lookaheadDeltaVRejections << "\n"
+         << "Lookahead exception-budget rejections: " << stats.lookaheadExceptionBudgetRejections << "\n"
+         << "Accepted orbital transfers: " << stats.successfulExtensions - stats.lookaheadReused + stats.lookaheadAccepted
+         << "\n"
+         << "Rejected orbital transfers: "
+         << stats.evaluationsAttempted - stats.validationEvaluations -
+            (stats.successfulExtensions - stats.lookaheadReused + stats.lookaheadAccepted) << "\n"
          << "Successful extensions: " << stats.successfulExtensions << "\n"
          << "Rejected extensions: " << stats.rejectedExtensions << "\n"
          << "Solver failures: " << stats.transferFailures << "\n"
@@ -192,6 +213,7 @@ void printResult(const BeamSearchResult &result)
          << "Peak beam size: " << stats.peakBeamSize << "\n"
          << "Complete routes found: " << stats.completeRoutesFound << "\n"
          << "Complete routes validated: " << stats.completeRoutesValidated << "\n"
+         << "Complete feasible routes: " << stats.completeFeasibleRoutes << "\n"
          << "Stop reason: " << (result.stop == BeamSearchStop::EvaluationLimit
                                   ? "evaluation allowance reached" : "attempts exhausted") << "\n"
          << "Runtime (s): " << stats.elapsedSeconds << "\n";
