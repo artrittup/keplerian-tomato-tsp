@@ -82,6 +82,8 @@ public:
     // Uniform over nonnegative wait and extra flight time whose sum fits the available slack.
     // Uses a fixed binary64 mapping of mt19937_64 outputs. No orbital transfer is evaluated.
     std::optional<LegTiming> sample(const PartialRoute &route);
+    // Optionally cap the combined wait and extra flight time for a shorter timing proposal.
+    std::optional<LegTiming> sample(const PartialRoute &route, double maxSlackDays);
 
 private:
     double unitSample();

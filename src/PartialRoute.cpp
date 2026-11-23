@@ -116,7 +116,12 @@ double TimingSampler::unitSample()
 
 std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route)
 {
-    if (route.remainingLegs() == 0)
+    return sample(route, std::numeric_limits<double>::infinity());
+}
+
+std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route, double maxSlackDays)
+{
+    if (route.remainingLegs() == 0 || !(maxSlackDays >= 0.0))
     {
         return std::nullopt;
     }
@@ -127,7 +132,7 @@ std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route)
     {
         return std::nullopt;
     }
-    const double slack = std::max(0.0, (latest - opening) - minimum);
+    const double slack = std::min(maxSlackDays, std::max(0.0, (latest - opening) - minimum));
     if (slack == 0.0)
     {
         return LegTiming{opening, minimum};

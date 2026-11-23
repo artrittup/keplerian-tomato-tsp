@@ -26,7 +26,7 @@ ctest --test-dir build/core --output-on-failure
 
 Use the **PyKEP v2.6 C++ core** and **Boost 1.74.0 headers and static Date_Time and Serialization libraries**. Build the dependencies and this project with the same Windows x64 compiler and runtime. The verified setup used **MSYS2 UCRT64 GCC 16.1.0**. The reference fixtures are included in the checkout. Python was used to generate them, and CTest runs them without Python. [Orbital transfer design](docs/orbital-transfer-design.md)
 
-Replace the placeholders below. `$ucrt64` is the UCRT64 directory containing `bin/g++.exe`. Prepending its `bin` directory to the current shell's `PATH` lets Windows load the matching GCC runtime DLLs. The test build copies the PyKEP DLL next to each orbital test executable.
+Replace the placeholders below. `$ucrt64` is the UCRT64 directory containing `bin/g++.exe`. Prepending its `bin` directory to the current shell's `PATH` lets Windows load the matching GCC runtime DLLs. The build copies the PyKEP DLL next to the program and each orbital test executable.
 
 ```powershell
 $ucrt64 = '<path-to-MSYS2-ucrt64>'
@@ -55,9 +55,19 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **34 tests**, including three transfer tests, eight route feasibility tests, and eleven partial route tests. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **42 tests**, including eight beam-search and CLI tests. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
+
+### Bounded beam-search experiment
+
+From the repository root, run the backend-enabled executable with the same UCRT64 `PATH` as the build. Without `--beam-search`, the executable continues to parse and summarize the instance.
+
+```powershell
+./build/transfer-x64/keplerian_tsp.exe --beam-search --seed 0 --beam-width 4 --destinations 8 --samples 6 --max-evaluations 10000 --restarts 2
+```
+
+These are the defaults. The input defaults to `data/easy.kttsp` and can be set with `--input FILE`. Use `--policy strict` (default) or `--policy published` to select the existing Delta-V rules. The evaluation limit counts failed orbital calls and full validation. `--restarts` requests additional attempts when the budget permits. The report includes seed, starts, counters, runtime and the verified route if one is found. A run that finds no route within its limits still exits successfully. [CPU optimization design](docs/cpu-optimization-design.md#phase-5c-beam-search)
 
 <details>
 <summary>Preparing a PyKEP v2.6 package from source</summary>
