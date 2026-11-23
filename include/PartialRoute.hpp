@@ -84,8 +84,13 @@ public:
     std::optional<LegTiming> sample(const PartialRoute &route);
     // Optionally cap the combined wait and extra flight time for a shorter timing proposal.
     std::optional<LegTiming> sample(const PartialRoute &route, double maxSlackDays);
+    // Restrict extra flight time to one of the equal-width bands of the slack interval.
+    std::optional<LegTiming> sampleStratified(const PartialRoute &route, double maxSlackDays,
+                                             std::size_t band, std::size_t bands);
 
 private:
+    std::optional<LegTiming> sampleWindow(const PartialRoute &route, double maxSlackDays,
+                                         std::size_t band, std::size_t bands);
     double unitSample();
 
     std::mt19937_64 engine_;

@@ -43,6 +43,40 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
     {
         return readUnsigned(value, config.seed);
     }
+    if (name == "--timing")
+    {
+        if (value == "baseline")
+        {
+            config.timingStrategy = BeamTimingStrategy::Baseline;
+            return true;
+        }
+        if (value == "stratified")
+        {
+            config.timingStrategy = BeamTimingStrategy::Stratified;
+            return true;
+        }
+        return false;
+    }
+    if (name == "--selection")
+    {
+        if (value == "baseline")
+        {
+            config.selectionStrategy = BeamSelectionStrategy::Baseline;
+            return true;
+        }
+        if (value == "temporal")
+        {
+            config.selectionStrategy = BeamSelectionStrategy::Temporal;
+            return true;
+        }
+        return false;
+    }
+    if (name == "--arrival-bin-days")
+    {
+        const auto end = value.data() + value.size();
+        const auto parsed = std::from_chars(value.data(), end, config.arrivalBinDays);
+        return parsed.ec == std::errc{} && parsed.ptr == end;
+    }
 
     struct SizeOption
     {
@@ -69,7 +103,59 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
 void printUsage(std::ostream &out)
 {
     out << "Usage: keplerian_tsp --beam-search [--input FILE] [--beam-width N] [--destinations N]\n"
-        << "       [--samples N] [--seed N] [--max-evaluations N] [--restarts N] [--policy strict|published]\n";
+        << "       [--samples N] [--seed N] [--max-evaluations N] [--restarts N] [--policy strict|published]\n"
+        << "       [--timing baseline|stratified] [--selection baseline|temporal] [--arrival-bin-days DAYS]\n"
+        << "       [--diagnostics]\n";
+}
+
+void printDiagnostics(const BeamSearchStats &stats)
+{
+    using std::cout;
+    cout << "\nBy parent depth (CSV)\n"
+         << "depth,prefixes,evaluations,accepted,rejected,invalid_timing,deadline,delta_v,exception_budget,"
+         << "orbital_input,no_lambert,numerical,invalid_destination,duplicate_destination,visited_skipped,"
+         << "destinations_clipped,no_timing,endpoint_pruned,width_pruned,retained,retained_at_exception_limit,"
+         << "latest_accepted_day,latest_retained_day,arrival_lt_2d,arrival_2_to_4d,arrival_4_to_8d,"
+         << "arrival_8_to_16d,arrival_ge_16d\n";
+    for (std::size_t i = 0; i < stats.byDepth.size(); ++i)
+    {
+        const auto &d = stats.byDepth[i];
+        cout << i + 1 << ',' << d.prefixesExamined << ',' << d.evaluations << ',' << d.accepted << ',' << d.rejected
+             << ',' << d.invalidTiming << ',' << d.deadlineExceeded << ',' << d.deltaVExceeded
+             << ',' << d.exceptionBudgetExceeded << ',' << d.orbitalInvalidInput << ',' << d.noLambertCandidate
+             << ',' << d.numericalFailure << ',' << d.invalidDestination << ',' << d.duplicateDestination
+             << ',' << d.visitedDestinationsSkipped << ',' << d.destinationsClipped << ',' << d.destinationsWithoutTiming
+             << ',' << d.sameEndpointPruned << ',' << d.widthPruned << ',' << d.retained << ',' << d.retainedAtExceptionLimit
+             << ',';
+        if (d.latestAcceptedArrivalDays)
+        {
+            cout << *d.latestAcceptedArrivalDays;
+        }
+        cout << ',';
+        if (d.latestRetainedArrivalDays)
+        {
+            cout << *d.latestRetainedArrivalDays;
+        }
+        for (const auto count : d.retainedArrivalBins)
+        {
+            cout << ',' << count;
+        }
+        cout << '\n';
+    }
+
+    cout << "\nTiming bins (CSV)\ntiming,min_days,max_days,evaluations,accepted,delta_v\n";
+    for (std::size_t i = 0; i < stats.byWait.size(); ++i)
+    {
+        const double lower = i == 0 ? 0.0 : beamTimingBinEdges[i - 1];
+        const double upper = i == beamTimingBinEdges.size() ? std::numeric_limits<double>::infinity()
+                                                           : beamTimingBinEdges[i];
+        for (const bool wait : {true, false})
+        {
+            const auto &b = wait ? stats.byWait[i] : stats.byFlight[i];
+            cout << (wait ? "wait" : "flight") << ',' << lower << ',' << upper << ',' << b.evaluations << ','
+                 << b.accepted << ',' << b.deltaVExceeded << '\n';
+        }
+    }
 }
 
 void printResult(const BeamSearchResult &result)
@@ -83,7 +169,13 @@ void printResult(const BeamSearchResult &result)
          << "Timing samples per destination: " << config.samplesPerDestination << "\n"
          << "Requested restarts: " << config.restartCount << "\n"
          << "Delta-V policy: " << (config.policy == DeltaVPolicy::Strict ? "strict" : "published") << "\n"
+         << "Timing strategy: " << (config.timingStrategy == BeamTimingStrategy::Stratified ? "stratified" : "baseline")
+         << "\n"
+         << "Selection strategy: "
+         << (config.selectionStrategy == BeamSelectionStrategy::Temporal ? "temporal" : "baseline") << "\n"
+         << "Maximum arrival bin width (days): " << config.arrivalBinDays << "\n"
          << "Attempts started: " << stats.attemptsStarted << "\n"
+         << "Attempts limited by budget: " << stats.attemptsLimitedByBudget << "\n"
          << "Starting tomatoes:";
     for (const int tomato : stats.startingTomatoes)
     {
@@ -136,14 +228,22 @@ int runBeamSearchExperiment(int argc, char *argv[])
     }
     BeamSearchConfig config;
     std::string input = "data/easy.kttsp";
-    for (int i = 0; i < argc; i += 2)
+    bool diagnostics = false;
+    for (int i = 0; i < argc;)
     {
+        if (std::string_view(argv[i]) == "--diagnostics")
+        {
+            diagnostics = true;
+            ++i;
+            continue;
+        }
         if (i + 1 == argc || !readOption(argv[i], argv[i + 1], config, input))
         {
             std::cerr << "Invalid beam-search option or value for " << argv[i] << "\n";
             printUsage(std::cerr);
             return 1;
         }
+        i += 2;
     }
     Problem problem;
     if (!problem.loadFromFile(input))
@@ -160,5 +260,9 @@ int runBeamSearchExperiment(int argc, char *argv[])
     }
     std::cout << "Instance: " << input << " (" << problem.tomatoes.size() << " tomatoes)\n";
     printResult(result);
+    if (diagnostics)
+    {
+        printDiagnostics(result.stats);
+    }
     return 0;
 }

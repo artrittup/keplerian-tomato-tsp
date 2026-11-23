@@ -121,6 +121,22 @@ std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route)
 
 std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route, double maxSlackDays)
 {
+    return sampleWindow(route, maxSlackDays, 0, 0);
+}
+
+std::optional<LegTiming> TimingSampler::sampleStratified(const PartialRoute &route, double maxSlackDays,
+                                                        std::size_t band, std::size_t bands)
+{
+    if (band >= bands)
+    {
+        return std::nullopt;
+    }
+    return sampleWindow(route, maxSlackDays, band, bands);
+}
+
+std::optional<LegTiming> TimingSampler::sampleWindow(const PartialRoute &route, double maxSlackDays,
+                                                    std::size_t band, std::size_t bands)
+{
     if (route.remainingLegs() == 0 || !(maxSlackDays >= 0.0))
     {
         return std::nullopt;
@@ -140,7 +156,12 @@ std::optional<LegTiming> TimingSampler::sample(const PartialRoute &route, double
 
     double waitFraction = unitSample();
     double extraFraction = unitSample();
-    if (waitFraction + extraFraction > 1.0)
+    if (bands != 0)
+    {
+        extraFraction = (static_cast<double>(band) + extraFraction) / static_cast<double>(bands);
+        waitFraction *= 1.0 - extraFraction;
+    }
+    else if (waitFraction + extraFraction > 1.0)
     {
         waitFraction = 1.0 - waitFraction;
         extraFraction = 1.0 - extraFraction;

@@ -84,6 +84,7 @@ if(BUILD_TESTING)
         target_link_libraries(partial_route_tests PRIVATE partial_route)
         add_executable(beam_search_tests tests/BeamSearchTests.cpp)
         target_link_libraries(beam_search_tests PRIVATE beam_search)
+        target_include_directories(beam_search_tests PRIVATE src)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -118,7 +119,7 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()
-        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton)
+        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay)
             add_test(NAME beam_${test_case} COMMAND beam_search_tests ${test_case})
         endforeach()
         add_test(NAME beam_cli COMMAND keplerian_tsp --beam-search

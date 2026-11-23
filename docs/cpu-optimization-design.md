@@ -112,6 +112,87 @@ The attempt count is capped by the requested restarts and the available budget f
 
 The implementation stores two bounded frontiers. Each holds up to `B` prefixes, each with up to `N` visits and a visited mask, for `O(BN)` frontier space. For `A` attempts, scanning and shuffling candidate lists costs up to `O(ABN²)`. With destination cap `D` and timing sample cap `K`, there are up to `O(ABNDK)` proposals, and actual orbital calls are bounded by the configured budget. Each accepted proposal copies the prefix in `O(N)` and updates the bounded frontier in `O(B)`. Sorting a level costs `O(B log B)`. The run also records up to `AB` starting indices.
 
+### Phase 5D timing diagnostics
+
+Use `--diagnostics` for CSV rows grouped by parent depth, the number of tomatoes visited before proposing a leg. The sum of per-depth orbital evaluations plus full-validation evaluations equals the total call count. Every extension is accepted or rejected. Accepted extensions are retained or removed by the endpoint or width rule. A replacement counts as one prune of the displaced candidate. Visited destinations and candidates clipped by the destination cap are filtered before proposing a transfer. A closed timing window also costs no orbital call. The rejection columns distinguish timing, deadline, Δv, exception budget, orbital input, no Lambert candidate, and numerical failure. Numerical failures can also arise during propagation. `Attempts limited by budget` counts each attempt where its allowance prevented additional work, even if the overall search had calls left because of a reserve.
+
+Baseline timing is unchanged. With `--timing stratified`, split the local extra-flight interval into equal-width bands, one per local sample for a destination. Draw flight time uniformly inside its band and wait uniformly within the slack left by that draw. Each fourth sample still uses the baseline's full window. Both modes use the same beam ranking and strict feasibility rules in the experiment. The local baseline's triangular distribution favors shorter flight durations marginally. The stratified proposal distributes local samples evenly across the interval.
+
+#### Measured on ESA easy
+
+The Release Windows x64 build used the validated PyKEP v2.6 backend. The paired runs used seeds 0, 1 and 7, width 6, 16 destinations, 12 samples, zero restarts and the strict policy. Caps of 2,048 and 8,048 left 48 calls reserved for final validation and gave exactly 2,000 and 8,000 construction calls per run. At 2,000 calls, both modes reached 3 tomatoes for every seed. The baseline accepted 863 of 6,000 calls (14.38%) and stratified accepted 990 (16.50%).
+
+| Seed | Baseline accepted / rejected at 8,000 calls | Stratified accepted / rejected at 8,000 calls | Baseline / stratified deepest prefix | Baseline / stratified seconds |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 1,193 / 6,807 | 1,300 / 6,700 | 8 / 8 | 0.0378 / 0.0401 |
+| 1 | 899 / 7,101 | 1,098 / 6,902 | 8 / 8 | 0.0378 / 0.0411 |
+| 7 | 1,192 / 6,808 | 1,334 / 6,666 | 8 / 8 | 0.0414 / 0.0423 |
+
+At 8,000 calls the aggregate acceptance rate increased from 13.68% to 15.55%. All matched-run rejections were above the Δv ceiling. There were zero complete routes in both modes, so neither had a feasible completion time. The Phase 5C default baseline reproduced its starts and counters. Replaying the stratified 8,000-call seed 7 run reproduced every diagnostic row apart from runtime.
+
+At the common 50,000-call cap, each of these single-attempt runs emptied its frontier and used fewer actual calls than the cap. The depths are consequently a secondary comparison with unequal work.
+
+| Seed | Mode | Calls | Accepted / rejected | Above ceiling / exception budget | Deepest prefix | Seconds |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | Baseline | 13,056 | 1,507 / 11,549 | 11,215 / 334 | 13 | 0.0608 |
+| 0 | Stratified | 13,248 | 1,620 / 11,628 | 11,412 / 216 | 12 | 0.0656 |
+| 1 | Baseline | 9,792 | 912 / 8,880 | 8,707 / 173 | 10 | 0.0457 |
+| 1 | Stratified | 13,056 | 1,397 / 11,659 | 11,205 / 454 | 14 | 0.0628 |
+| 7 | Baseline | 12,864 | 1,410 / 11,454 | 11,201 / 253 | 12 | 0.0586 |
+| 7 | Stratified | 11,328 | 1,514 / 9,814 | 9,516 / 298 | 11 | 0.0604 |
+
+There were zero invalid timings, deadline violations, solver failures, and duplicate extension attempts in these runs. Across the six terminal levels, 1,571 of 1,728 calls exceeded the ceiling and the other 157 exhausted the exception budget. Both strategies found zero complete routes and no feasible completion time. Stratification improved the number of usable extensions per call in the equal-work runs. The measured depth gains were inconsistent.
+
+#### Timing and beam observations
+
+- At 8,000 calls per seed, the baseline used 2,002 calls on flights shorter than 0.25 days and accepted only 13 (0.65%). Flights of at least one day produced 2,804 acceptances in 16,596 calls (16.90%). Stratification reduced sub-day flight calls from 7,404 to 4,234 across the same 24,000-call total. These are conditional rates for this search and mix timing, orbital pairs and surviving prefixes.
+- A controlled check held orbit pairs fixed. The existing x64 transfer probe sampled 16 departures from day 0 to 1.875 in steps of 0.125 days and flight durations of 0.125, 0.25, 0.5, 1, 2, 3, 4 and 5 days for each of two easy-instance pairs. For tomato 1 → 48 at a fixed 5-day flight, changing departure changed Δv from 82.06 to 557.85 m/s, with 2 of 16 normal. At a fixed departure of 0.125 days, varying flight time changed Δv from 99.26 to 5,110.12 m/s. The 256-query grid shows sensitivity to both variables for those pairs.
+- For seed 0 in the longer baseline run, 654 accepted prefixes were removed by endpoint collisions and 791 by width, leaving 62 retained across depths. At the first expansion the latest accepted arrival was day 198.907, while the latest retained arrival was day 1.8132. The ranking strongly favors early arrivals in this example. The diagnostics establish that later feasible prefixes were discarded. They do not establish that any discarded prefix could have finished the mission. Wider timing coverage alone has yet to demonstrate more reliable complete-route construction.
+
+Reproduce a matched run from the project root. Change only `--timing` for the paired comparison.
+
+```powershell
+./build/transfer-x64/keplerian_tsp.exe --beam-search --beam-width 6 --destinations 16 --samples 12 --seed 0 --restarts 0 --max-evaluations 8048 --policy strict --timing stratified --diagnostics
+```
+
+### Diversity-aware beam selection
+
+The default selector still uses the Phase 5C rank. Enable the experimental selector with `--selection temporal`. It ranks all accepted candidates at an incomplete level, keeps the best one, then offers one slot per other occupied arrival bin in chronological order. It uses the best-ranked candidate in each bin whose endpoint is unused. Any open slots are filled by the original rank. Endpoints stay unique and the retained frontier never exceeds beam width. Width one and the complete level use the original selector.
+
+The four bins start at the earliest accepted arrival at that level. Each is at most `--arrival-bin-days` wide (default 1 day). Let `latest` be the mission deadline less all remaining minimum flight durations. The bin width is also capped at `(latest - earliest) / 16`, so preferred bins cover at most one quarter of the spare time after the earliest arrival. A later candidate outside those bins can still win an ordinary rank slot. The selector makes no orbital calls. It sorts and temporarily holds up to `P` accepted prefixes for a level, taking `O(P log P)` selection time and `O(PN)` pool storage. The two retained frontiers still take `O(BN)` space.
+
+#### Matched experiments on ESA easy
+
+The Windows x64 runs used strict Δv, width 6, 16 destinations, 12 samples, no restarts, and seeds 0, 1 and 7. Each timing mode was tested with both selectors. With a configured 8,048-call limit, all twelve runs made exactly 8,000 orbital calls, leaving 48 reserved for validation. Each row below totals three seeds. The arrival bins are elapsed mission days and count retained children across all expanded depths. Pruned candidates are accepted children excluded from the final frontier.
+
+| Timing | Selector | Calls | Accepted | Rejected | Pruned | Retained arrivals by bin: <2 / 2–4 / 4–8 / 8–16 / ≥16 d | Runtime per run (s) |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| Uniform | Baseline | 24,000 | 3,284 | 20,716 | 3,158 | 16 / 14 / 41 / 54 / 1 | 0.036–0.039 |
+| Uniform | Temporal | 24,000 | 3,193 | 20,807 | 3,067 | 11 / 17 / 43 / 55 / 0 | 0.035–0.036 |
+| Stratified | Baseline | 24,000 | 3,732 | 20,268 | 3,606 | 14 / 14 / 27 / 64 / 7 | 0.038–0.039 |
+| Stratified | Temporal | 24,000 | 3,691 | 20,309 | 3,565 | 12 / 17 / 36 / 58 / 3 | 0.037–0.040 |
+
+All fixed-budget runs reached 8 of 49 tomatoes. The time distribution did change. With uniform timing and seed 0, for example, the first baseline frontier retained six arrivals before day 2. The temporal frontier retained four before day 2 and two between days 2 and 4. Across depths there was no systematic shift toward very late arrivals.
+
+All runs at the larger 50,000-call cap exhausted their frontiers before reaching the cap. To compare equal work at a later checkpoint, both strategies were rerun for each seed and timing mode with the smaller of their two actual call counts, plus the same 48-call reserve. This gave the following matched depths.
+
+| Timing | Seed | Calls per selector | Baseline depth | Temporal depth |
+| --- | ---: | ---: | ---: | ---: |
+| Uniform | 0 | 10,752 | 11 | 10 |
+| Uniform | 1 | 9,792 | 10 | 10 |
+| Uniform | 7 | 10,560 | 11 | 10 |
+| Stratified | 0 | 12,672 | 12 | 12 |
+| Stratified | 1 | 12,096 | 12 | 11 |
+| Stratified | 7 | 11,328 | 11 | 11 |
+
+The temporal selector tied three later checkpoints and lost one visit at the other three. The highest unmatched depth was 14 for baseline selection and 13 for temporal selection, with different call counts. None of the 36 runs found a complete route or a feasible mission completion time. This binning rule broadened some early beams and did not improve depth under matched work.
+
+To reproduce a fixed-budget pair, run the following from the project root and change only `--selection`.
+
+```powershell
+./build/transfer-x64/keplerian_tsp.exe --beam-search --beam-width 6 --destinations 16 --samples 12 --seed 0 --restarts 0 --max-evaluations 8048 --policy strict --timing baseline --selection temporal --arrival-bin-days 1 --diagnostics
+```
+
 ## Search guidance for infeasible candidates
 
 Keep exploratory candidates separate from the feasible incumbent. Discard a structurally invalid decode that cannot be repaired. For structurally valid candidates with valid problem limits, use the per-leg statuses and raw costs to compute this lexicographic search key:
