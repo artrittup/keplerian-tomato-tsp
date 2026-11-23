@@ -8,11 +8,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include_directories(include)
 
+add_library(solution STATIC src/Solution.cpp)
+target_include_directories(solution PUBLIC include)
+
 add_executable(keplerian_tsp
     src/main.cpp
     src/Problem.cpp
-    src/Solution.cpp
 )
+target_link_libraries(keplerian_tsp PRIVATE solution)
 
 option(KTTSP_ENABLE_TRANSFER_SOLVER "Build the PyKEP v2.6 transfer solver" OFF)
 if(KTTSP_ENABLE_TRANSFER_SOLVER)
@@ -23,7 +26,10 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(transfer_solver STATIC src/TransferSolver.cpp)
     target_include_directories(transfer_solver PUBLIC include)
     target_link_libraries(transfer_solver PRIVATE Keplerian_toolbox::keplerian_toolbox)
-    target_link_libraries(keplerian_tsp PRIVATE transfer_solver)
+
+    add_library(solution_evaluator STATIC src/SolutionEvaluator.cpp)
+    target_link_libraries(solution_evaluator PUBLIC transfer_solver PRIVATE solution)
+    target_link_libraries(keplerian_tsp PRIVATE solution_evaluator)
 endif()
 
 include(CTest)
@@ -41,10 +47,8 @@ if(BUILD_TESTING)
         )
     endforeach()
 
-    add_executable(solution_tests
-        tests/SolutionTests.cpp
-        src/Solution.cpp
-    )
+    add_executable(solution_tests tests/SolutionTests.cpp)
+    target_link_libraries(solution_tests PRIVATE solution)
 
     foreach(test_case IN ITEMS valid permutation lengths timing nonfinite boundaries)
         add_test(NAME solution_${test_case} COMMAND solution_tests ${test_case})
@@ -53,13 +57,21 @@ if(BUILD_TESTING)
     if(KTTSP_ENABLE_TRANSFER_SOLVER)
         add_executable(transfer_solver_tests tests/TransferSolverTests.cpp src/Problem.cpp)
         target_link_libraries(transfer_solver_tests PRIVATE transfer_solver)
+        add_executable(solution_evaluator_tests tests/SolutionEvaluatorTests.cpp src/Problem.cpp)
+        target_link_libraries(solution_evaluator_tests PRIVATE solution_evaluator)
         if(WIN32)
-            add_custom_command(TARGET transfer_solver_tests POST_BUILD
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                    "$<TARGET_FILE:Keplerian_toolbox::keplerian_toolbox>"
-                    "$<TARGET_FILE_DIR:transfer_solver_tests>"
-                VERBATIM
+            # Keep the tests' DLL copies in different directories for parallel builds.
+            set_target_properties(solution_evaluator_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/evaluator-tests"
             )
+            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests)
+                add_custom_command(TARGET ${test_target} POST_BUILD
+                    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                        "$<TARGET_FILE:Keplerian_toolbox::keplerian_toolbox>"
+                        "$<TARGET_FILE_DIR:${test_target}>"
+                    VERBATIM
+                )
+            endforeach()
         endif()
         add_test(NAME transfer_reference COMMAND transfer_solver_tests reference
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/transfer-reference.txt"
@@ -67,5 +79,10 @@ if(BUILD_TESTING)
         )
         add_test(NAME transfer_errors COMMAND transfer_solver_tests errors)
         add_test(NAME transfer_policies COMMAND transfer_solver_tests policies)
+        foreach(test_case IN ITEMS structure chronology normal exception budget policies solver_failure singleton)
+            add_test(NAME evaluator_${test_case} COMMAND solution_evaluator_tests ${test_case}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            )
+        endforeach()
     endif()
 endif()
