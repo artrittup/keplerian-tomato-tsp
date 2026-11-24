@@ -55,7 +55,7 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **101 tests**, including fixed-order scheduling and permutation screening. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **109 tests**, including fixed-order scheduling, permutation screening, and directed fragment assembly. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
 
@@ -118,6 +118,16 @@ ctest --test-dir build/transfer-x64 -R '^fixed_order_seed0_reference$' --output-
 cmake --build build/transfer-x64 --target permutation_screen permutation_screen_tests
 ./build/transfer-x64/permutation-screen/permutation_screen.exe data/easy.kttsp data/easy.order 0 150528 1000 8
 ctest --test-dir build/transfer-x64 -R '^permutation_screen_' --output-on-failure
+```
+
+### Directed fragment assembly experiment
+
+`fragment_assemble` constructs complete orders from directed pair evidence. Its assembler starts with singleton fragments and can merge, insert, or split them within a fixed attempt and repair budget. Pass `-` in place of the reference order to omit the ESA-derived comparison groups. In this example, `16` caps repair splits per attempt, `0` disables unknown joins, `8` is the sampling flight cap in days, and `5` prints up to five unique shortlisted orders for separate scheduling. [Phase 6C design, results, and scheduling commands](docs/optimization-literature-review.md#phase-6c-directed-fragment-assembly)
+
+```powershell
+cmake --build build/transfer-x64 --target fragment_assemble fragment_assembly_tests
+./build/transfer-x64/fragment-assembly/fragment_assemble.exe data/easy.kttsp data/easy.order 0 1204224 1000 16 0 8 5
+ctest --test-dir build/transfer-x64 -R '^fragment_assembly_' --output-on-failure
 ```
 
 <details>

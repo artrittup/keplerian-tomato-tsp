@@ -201,3 +201,79 @@ ctest --test-dir build/transfer-x64 -R '^permutation_screen_' --output-on-failur
 ```
 
 The evidence supports trying directed normal-fragment assembly before budgeting for timing. Keep a shortlist of orders with strong connectivity and resample a small number of uncertain joins. Use fixed-order scheduling and strict validation on that shortlist before comparing mission times. The best ranking for choosing which orders warrant that expense remains an open measurement question.
+
+## Phase 6C directed fragment assembly
+
+### Method
+
+Weise et al. cut an input permutation into normal-connected fragments, join or insert fragments, and then allow exception joins. Their decoder concatenates remaining fragments and screens the resulting order before timing it. Phase 6C keeps the directed joins and insertion rule. Each attempt starts from `N` singleton fragments, using pair evidence to construct the order. Its comparison permutation is never an input to the assembler. A bounded split can reopen a blocked endpoint. When the join limits prevent further progress, the attempt ends with an explicit failure count. This implements the construction experiment and leaves the paper's outer permutation optimization and timing search for separate work. [Weise et al., §§2–4](https://doi.org/10.1145/3795101.3815557)
+
+For an append, inspect the arc from the host tail to the guest head. For an insertion, replace one host arc with a directed arc into the guest head and a directed arc out of its tail. Neither move reverses a fragment. An attempt maintains a partition of the tomatoes into nonempty paths. Each join operates on two different paths and preserves all vertices. A split partitions a path at one arc and bans that arc for the rest of the attempt. These rules exclude duplicates and cycles without any checks between already-connected vertices.
+
+Every join must respect the instance's observed exception-only limit and the configurable unknown-arc limit. A join does not use a rejected-only pair. These are construction rules on the evidence table. Further sampling can discover new witnesses on unresolved or rejected-only pairs. Among allowed moves, compare the change in unknown count, then the change in exception-only count. Each second attempt further ranks ties using the sum of the new arcs' normal out-degrees at their sources and normal in-degrees at their destinations, favoring lower-degree ends. The seeded generator breaks remaining ties. If no move is allowed, uniformly select a currently retained arc to split, bounded by the repair limit. Exact duplicate completions count toward completion statistics and appear only once in the output. Equal Phase 6B screening scores in the shortlist retain discovery order. [Assembler](../src/FragmentAssembly.cpp)
+
+With `K` current fragments there are `N(K-1)` append or insertion slots to check. Each examines at most two new arcs and one removed arc in constant time. Each repair raises the fragment count by one, and each successful join reduces it by one. The worst-case work per attempt is `O((N+R)N²)` for `R` repairs, with `O(N²)` working space plus `O(UN)` for up to `U` unique returned orders. The Phase 6B screen adds `O(N)` per order and makes zero additional orbital calls. Dynamic slot checks and normal-first choices make this a construction method. A swap, insertion, or reversal neighbor instead starts with an existing complete order and alters selected positions.
+
+### ESA easy screening results
+
+All runs regenerated the Phase 6B eight-day matrix from the original instance with **1,204,224 actual calls**, 512 per directed pair, and zero cache hits. The reference was used only to score `data/easy.order` and its one-move neighbors. The independent assembly and random groups used their own seeded random streams. Neither they nor the matrix construction read any ESA or Phase 6A solution schedule. The four comparison groups each drew 1,000 orders with replacement. Assembled means use unique complete orders.
+
+| Seed | Max repairs per attempt | Completed / unique | Failed | Splits | Assembly time |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 2 / 2 | 998 | 0 | 0.550 s |
+| 0 | 6 | 1 / 1 | 999 | 5,994 | 0.579 s |
+| 7 | 6 | 1 / 1 | 999 | 5,994 | 0.580 s |
+| 0 | 16 | 8 / 8 | 992 | 15,872 | 0.748 s |
+
+Matrix sampling took 10.24–22.16 seconds across these runs and was timed separately. Scoring and sorting took at most 2.90 ms. The high failure count is a limitation. The 16-repair configuration completed more attempts in the measured seed-0 run. The repair configurations use different numbers of random draws, so this is a comparison of seeded runs and does not pair individual attempts across repair limits. The two six-repair orders shared six of 48 directed arcs with each other. They shared 29 and three arcs with the ESA reference for seeds 0 and 7 respectively. Seed 0 reproduced the identical order, counters, and shared group scores with `-`, omitting the ESA reference file entirely.
+
+The following are seed-0 means at 16 repairs. Lower Phase 6B rank tuples are better. Tuple fields are unsupported, exception excess, incompatible joins, rejected-only, and exception-only.
+
+| Group | Count | Normal | Exception-only | Rejected-only | Unknown | Incompatible joins | Best tuple |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Assembled | 8 | 43.750 | 4.250 | 0 | 0 | 0.250 | `(0, 0, 0, 0, 4)` |
+| Random | 1,000 | 2.732 | 16.100 | 29.168 | 0 | 0.028 | `(20, 21, 0, 20, 26)` |
+| ESA reference | 1 | 44 | 4 | 0 | 0 | 0 | `(0, 0, 0, 0, 4)` |
+| ESA-derived swap | 1,000 | 40.626 | 4.972 | 2.402 | 0 | 0.001 | `(0, 0, 0, 0, 4)` |
+| ESA-derived insertion | 1,000 | 41.623 | 5.154 | 1.223 | 0 | 0.004 | `(0, 0, 0, 0, 4)` |
+| ESA-derived reversal | 1,000 | 42.308 | 4.507 | 1.185 | 0 | 0 | `(0, 0, 0, 0, 4)` |
+
+### Scheduling the independent shortlist
+
+The first-ranked unique order from each of the seed-0/six-repair, seed-7/six-repair, and seed-0/16-repair runs was scheduled using the existing Phase 6A CLI. The scheduler received only the original instance and each new permutation. All runs used the same timing settings as the Phase 6A seed-0 run. For each candidate the two scheduling methods shared 3,999,952 discovery calls and made 48 fresh strict `SolutionEvaluator` calls each. `--max-evaluations 4000000` is a per-method cap. The combined bound was 4,000,048 calls per candidate and 12,000,144 across the three candidates. All six solutions completed, using exactly that total. These calls are separate from matrix discovery. The six exported schedules passed a separate file replay through the C++ evaluator. The audit helper ran both policies, for 576 calls across the six file checks and a further 96 from one diagnostic repeat. The table reports strict results. [Fixed-order scheduler](../src/FixedOrderScheduler.cpp) · [SolutionEvaluator](../src/SolutionEvaluator.cpp)
+
+| Assembler seed / repair cap | Normal-first days / exceptions | Earliest-arrival days / exceptions |
+| --- | ---: | ---: |
+| 0 / 6 | 188.711817612 / 4 | 181.001104356 / 5 |
+| 7 / 6 | 191.008708861 / 4 | **177.194403497 / 5** |
+| 0 / 16 | 193.553058333 / 4 | 182.133241420 / 5 |
+
+The fastest new order used only three of the ESA reference's 48 directed arcs. Its strict replay measured a maximum normal Delta-V of 99.706260306 m/s and a maximum leg Delta-V of 599.540412387 m/s. The result is 0.313026451 days slower than the Phase 6A reference. All three shortlisted orders shared the same best screen tuple, yet their earliest-arrival times spanned nearly five days. The class counts describe sampled choices on each pair. The selected timings can use more exception legs than the screen's exception-only count. The experiment shows that independent fragment assembly can generate schedulable orders under a bounded budget. Assembly still stalls frequently, and improving the verified mission time remains open.
+
+### Reproduction
+
+Use the existing backend-enabled Windows x64 configuration and UCRT64 runtime PATH. Use the commands from the repository root. The non-Windows Ninja executable is at the build root.
+
+```powershell
+cmake --build build/transfer-x64 --target fragment_assemble fragment_assembly_tests fixed_order_schedule
+New-Item -ItemType Directory -Force build/phase6c | Out-Null
+$fragment = './build/transfer-x64/fragment-assembly/fragment_assemble.exe'
+& $fragment data/easy.kttsp data/easy.order 0 1204224 1000 0 0 8 5 | Set-Content -Encoding ascii build/phase6c/seed0-no-repair.log
+& $fragment data/easy.kttsp data/easy.order 0 1204224 1000 6 0 8 5 | Set-Content -Encoding ascii build/phase6c/seed0-repair6.log
+& $fragment data/easy.kttsp data/easy.order 7 1204224 1000 6 0 8 5 | Set-Content -Encoding ascii build/phase6c/seed7-repair6.log
+& $fragment data/easy.kttsp data/easy.order 0 1204224 1000 16 0 8 5 | Set-Content -Encoding ascii build/phase6c/seed0-repair16.log
+& $fragment data/easy.kttsp - 0 1204224 1000 6 0 8 5 | Set-Content -Encoding ascii build/phase6c/seed0-without-reference.log
+ctest --test-dir build/transfer-x64 -R '^fragment_assembly_' --output-on-failure
+```
+
+Use the first `order,1,` record from each selected run and pass its indices to the fixed-order CLI. The CLI exports schedules only after fresh strict validation. Logs, permutation files, and solution exports in these commands stay under ignored `build/`.
+
+```powershell
+$schedule = './build/transfer-x64/fixed-order/fixed_order_schedule.exe'
+foreach ($run in 'seed0-repair6', 'seed7-repair6', 'seed0-repair16') {
+    $prefix = "build/phase6c/$run-schedule"
+    $record = Get-Content "build/phase6c/$run.log" | Where-Object { $_ -match '^order,1,' }
+    $record.Substring(8) | Set-Content -Encoding ascii "$prefix.order"
+    & $schedule data/easy.kttsp "$prefix.order" --max-evaluations 4000000 --seed 0 --bands 32 --refinement-percent 50 --flight-scale 2 --cache-capacity 32768 --output-prefix $prefix
+}
+```

@@ -45,6 +45,9 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(permutation_screening STATIC src/PermutationScreening.cpp)
     target_link_libraries(permutation_screening PUBLIC transfer_window_explorer)
 
+    add_library(fragment_assembly STATIC src/FragmentAssembly.cpp)
+    target_link_libraries(fragment_assembly PUBLIC permutation_screening)
+
     add_library(graph_search STATIC src/GraphSearch.cpp)
     target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
 
@@ -69,6 +72,8 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     target_link_libraries(fixed_order_schedule PRIVATE fixed_order_scheduler)
     add_executable(permutation_screen src/PermutationScreenCli.cpp src/Problem.cpp)
     target_link_libraries(permutation_screen PRIVATE permutation_screening fixed_order_scheduler)
+    add_executable(fragment_assemble src/FragmentAssemblyCli.cpp src/Problem.cpp)
+    target_link_libraries(fragment_assemble PRIVATE fragment_assembly fixed_order_scheduler)
 
     if(WIN32)
         copy_pykep_runtime(keplerian_tsp)
@@ -80,6 +85,10 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/permutation-screen"
         )
         copy_pykep_runtime(permutation_screen)
+        set_target_properties(fragment_assemble PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fragment-assembly"
+        )
+        copy_pykep_runtime(fragment_assemble)
         set_target_properties(transfer_window_benchmark PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/window-benchmark"
         )
@@ -130,6 +139,8 @@ if(BUILD_TESTING)
         target_link_libraries(fixed_order_tests PRIVATE fixed_order_scheduler solution_evaluator)
         add_executable(permutation_screen_tests tests/PermutationScreeningTests.cpp src/Problem.cpp)
         target_link_libraries(permutation_screen_tests PRIVATE permutation_screening)
+        add_executable(fragment_assembly_tests tests/FragmentAssemblyTests.cpp)
+        target_link_libraries(fragment_assembly_tests PRIVATE fragment_assembly)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -160,6 +171,10 @@ if(BUILD_TESTING)
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/permutation-screen-tests"
             )
             copy_pykep_runtime(permutation_screen_tests)
+            set_target_properties(fragment_assembly_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fragment-assembly-tests"
+            )
+            copy_pykep_runtime(fragment_assembly_tests)
             foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests transfer_window_tests fixed_order_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
@@ -220,6 +235,13 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.order" 0 49 8
         )
         set_tests_properties(permutation_screen_cli PROPERTIES PASS_REGULAR_EXPRESSION "Orbital calls: 49")
+        foreach(test_case IN ITEMS direction insertion repair failure fallback replay invalid)
+            add_test(NAME fragment_assembly_${test_case} COMMAND fragment_assembly_tests ${test_case})
+        endforeach()
+        add_test(NAME fragment_assembly_cli COMMAND fragment_assemble
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" - 0 49 8 1 0
+        )
+        set_tests_properties(fragment_assembly_cli PROPERTIES PASS_REGULAR_EXPRESSION "Matrix calls: 49")
         add_test(NAME graph_search_cli COMMAND keplerian_tsp --graph-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )
