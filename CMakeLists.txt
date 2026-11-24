@@ -39,6 +39,9 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(transfer_window_explorer STATIC src/TransferWindowExplorer.cpp)
     target_link_libraries(transfer_window_explorer PUBLIC transfer_graph)
 
+    add_library(fixed_order_scheduler STATIC src/FixedOrderScheduler.cpp)
+    target_link_libraries(fixed_order_scheduler PUBLIC transfer_window_explorer PRIVATE solution_evaluator)
+
     add_library(graph_search STATIC src/GraphSearch.cpp)
     target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
 
@@ -59,9 +62,15 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
 
     add_executable(transfer_window_benchmark EXCLUDE_FROM_ALL benchmarks/phase5j/Benchmark.cpp src/Problem.cpp)
     target_link_libraries(transfer_window_benchmark PRIVATE transfer_window_explorer partial_route)
+    add_executable(fixed_order_schedule src/FixedOrderScheduleCli.cpp src/Problem.cpp)
+    target_link_libraries(fixed_order_schedule PRIVATE fixed_order_scheduler)
 
     if(WIN32)
         copy_pykep_runtime(keplerian_tsp)
+        set_target_properties(fixed_order_schedule PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixed-order"
+        )
+        copy_pykep_runtime(fixed_order_schedule)
         set_target_properties(transfer_window_benchmark PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/window-benchmark"
         )
@@ -107,6 +116,9 @@ if(BUILD_TESTING)
         target_link_libraries(graph_search_tests PRIVATE graph_search solution_evaluator)
         add_executable(transfer_window_tests tests/TransferWindowExplorerTests.cpp src/Problem.cpp)
         target_link_libraries(transfer_window_tests PRIVATE transfer_window_explorer)
+        add_executable(fixed_order_tests tests/FixedOrderSchedulerTests.cpp src/Problem.cpp)
+        target_include_directories(fixed_order_tests PRIVATE src)
+        target_link_libraries(fixed_order_tests PRIVATE fixed_order_scheduler solution_evaluator)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -130,7 +142,10 @@ if(BUILD_TESTING)
             set_target_properties(transfer_window_tests PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transfer-window-tests"
             )
-            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests transfer_window_tests)
+            set_target_properties(fixed_order_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixed-order-tests"
+            )
+            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests transfer_window_tests fixed_order_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
         endif()
@@ -168,6 +183,19 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()
+        foreach(test_case IN ITEMS chronology exceptions fixed_order failure budget replay order_input)
+            add_test(NAME fixed_order_${test_case} COMMAND fixed_order_tests ${test_case})
+        endforeach()
+        add_test(NAME fixed_order_seed0_reference COMMAND fixed_order_tests seed0_reference
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.order"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/esa-easy-fixed-order-seed0-earliest.sol"
+        )
+        add_test(NAME fixed_order_cli COMMAND fixed_order_schedule
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.order"
+            --max-evaluations 96 --seed 7
+        )
+        set_tests_properties(fixed_order_cli PROPERTIES PASS_REGULAR_EXPRESSION "Discovery calls: 48")
         add_test(NAME graph_search_cli COMMAND keplerian_tsp --graph-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )
