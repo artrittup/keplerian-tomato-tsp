@@ -36,6 +36,9 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(transfer_graph STATIC src/TransferCache.cpp src/TransferGraph.cpp)
     target_link_libraries(transfer_graph PUBLIC transfer_solver solution)
 
+    add_library(transfer_window_explorer STATIC src/TransferWindowExplorer.cpp)
+    target_link_libraries(transfer_window_explorer PUBLIC transfer_graph)
+
     add_library(graph_search STATIC src/GraphSearch.cpp)
     target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
 
@@ -54,8 +57,15 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
         )
     endfunction()
 
+    add_executable(transfer_window_benchmark EXCLUDE_FROM_ALL benchmarks/phase5j/Benchmark.cpp src/Problem.cpp)
+    target_link_libraries(transfer_window_benchmark PRIVATE transfer_window_explorer partial_route)
+
     if(WIN32)
         copy_pykep_runtime(keplerian_tsp)
+        set_target_properties(transfer_window_benchmark PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/window-benchmark"
+        )
+        copy_pykep_runtime(transfer_window_benchmark)
     endif()
 endif()
 
@@ -95,6 +105,8 @@ if(BUILD_TESTING)
         target_link_libraries(transfer_graph_tests PRIVATE transfer_graph partial_route)
         add_executable(graph_search_tests tests/GraphSearchTests.cpp src/Problem.cpp)
         target_link_libraries(graph_search_tests PRIVATE graph_search solution_evaluator)
+        add_executable(transfer_window_tests tests/TransferWindowExplorerTests.cpp src/Problem.cpp)
+        target_link_libraries(transfer_window_tests PRIVATE transfer_window_explorer)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -115,7 +127,10 @@ if(BUILD_TESTING)
             set_target_properties(graph_search_tests PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/graph-search-tests"
             )
-            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests)
+            set_target_properties(transfer_window_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transfer-window-tests"
+            )
+            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests transfer_window_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
         endif()
@@ -145,6 +160,11 @@ if(BUILD_TESTING)
         endforeach()
         foreach(test_case IN ITEMS backtrack reuse visit_once exceptions replay limits validation)
             add_test(NAME graph_search_${test_case} COMMAND graph_search_tests ${test_case}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            )
+        endforeach()
+        foreach(test_case IN ITEMS known narrow none classification policies budget cache replay bounds)
+            add_test(NAME transfer_window_${test_case} COMMAND transfer_window_tests ${test_case}
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()

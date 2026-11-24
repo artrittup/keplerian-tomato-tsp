@@ -293,6 +293,131 @@ foreach ($seed in 0, 1, 7) {
 }
 ```
 
+### Phase 5I benchmark and bottlenecks
+
+The standalone benchmark under `benchmarks/phase5i` uses the existing search and orbital implementations. It builds measurement-only copies of the solver and graph source in the build directory to count physical outcomes and graph filters. Production files and the CLI keep their previous code. Every search uses the same 49-tomato ESA easy data and strict policy, with seeds 0, 1, and 7. Each configuration runs three times with identical seeds. The harness checks that the orbital call count matches the search's own counter and that repeated runs reproduce the result and main counters. Times are medians of the three repeats. The Release toolchain was Windows x64 UCRT64 GCC 16.1.0, CMake 4.4.4, Ninja 1.13.2, PyKEP C++ v2.6, and Boost 1.74.0. The machine used an Intel Core i7-13650HX.
+
+#### Matched actual orbital budgets
+
+The beam baseline uses width 12, stratified timing, baseline ranking, and no restarts. Graph search saves up to 12 alternatives per state with caps of 10,000 opened states and 10,000 undone legs. Both use at most 24 destinations and 16 timing proposals per destination. Add 48 calls to each construction allowance for independent validation. Each pair below spent exactly the listed actual calls. Raw acceptance is the fraction of solver calls that returned a finite normal or exception leg under the strict policy before checking the route's remaining exceptions. The normal rate is reported separately because a complete easy route needs at least 43 normal legs out of 48. Rates pool the three seeds.
+
+| Actual calls per run | Depth, beam (0 / 1 / 7) | Depth, graph (0 / 1 / 7) | Raw acceptance, beam / graph | Normal rate, beam / graph |
+| ---: | ---: | ---: | ---: | ---: |
+| 8,000 | 3 / 3 / 3 | 10 / 15 / 13 | 17.07% / 8.31% | 0.979% / 0.417% |
+| 24,000 | 7 / 7 / 7 | 11 / 16 / 15 | 15.47% / 5.59% | 0.672% / 0.194% |
+| 48,000 | 12 / 12 / 12 | 11 / 16 / 16 | 15.05% / 4.05% | 0.539% / 0.140% |
+| 60,000 | 14 / 14 / 14 | 11 / 16 / 16 | 14.51% / 3.60% | 0.508% / 0.113% |
+
+The low-budget beam expands nearly whole levels before moving deeper. Graph search can extend a single prefix sooner. At the two largest budgets, graph search leads for two seeds and trails for seed 0. Extra graph calls and extra backtracking did little for depth after 24,000. Across 71 configurations, the deepest beam prefix reached 18 and the deepest graph prefix reached 16. No search found a complete route or a feasible mission time.
+
+#### Beam allocation and diversity
+
+The rows below use 24,000 actual calls on each seed unless noted. The percentage counts solver calls that produced an extension admissible in the current route history, including successful lookahead calls when enabled.
+
+| Change from beam baseline | Depth (0 / 1 / 7) | Route-admissible calls |
+| --- | ---: | ---: |
+| Baseline width 12, 24 destinations, 16 timings | 7 / 7 / 7 | 15.47% |
+| Width 6 | 12 / 12 / 12 | 14.30% |
+| Width 24 | 4 / 4 / 4 | 14.05% |
+| 12 destinations | 12 / 12 / 12 | 12.54% |
+| 36 destinations | 5 / 5 / 5 | 15.26% |
+| 8 timings per destination | 12 / 12 / 12 | 14.16% |
+| 24 timings per destination | 5 / 5 / 5 | 16.65% |
+| Uniform timing | 7 / 7 / 7 | 13.44% |
+| Temporal selection | 7 / 7 / 7 | 15.80% |
+| One-step lookahead | 7 / 7 / 7 | 16.26% |
+
+With 12 destinations, seed 1 emptied its frontier at 23,232 calls. At that matched checkpoint, width 12 with 12 destinations reached depth 12 and the baseline reached depth 7. The differences show how much wider levels cost at a fixed allowance. They do not establish that the narrow beam would reach the best complete route. Stratification raised acceptance relative to uniform sampling. The baseline and temporal selector retained `[26,42,75,73,0]` and `[26,43,77,70,0]` arrivals in the five diagnostic bins, pooled across levels and seeds. At this checkpoint the additional selector changed those totals slightly and depth stayed the same.
+
+#### Limits, filters, and costs
+
+- **Orbital allowance.** The matched beam runs stopped at the construction allowance. Graph search reached the same orbital allowance and continued traversing stored arcs until the state cap. With a 60,000-call allowance and only 50 states, each graph seed used 19,200 calls and reached depths 10/16/15. With 200 states they all used 60,000 calls and reached 10/16/16. With 2,000, 10,000, or 30,000 states the depths were 11/16/16 at those same 60,000 calls.
+- **No sampled continuation.** With a 200,000-call construction allowance, the three beam runs exhausted their frontiers at 73,344, 62,592, and 70,656 calls. The last frontier had one remaining prefix per seed and tried 384 transfers. The ceiling rejected 370/370/341 and exhausted exceptions rejected the remaining 14/14/43. Each terminal prefix had already used five exceptions.
+- **Deadline.** The deadline and minimum-duration reserve pruned 1,585 graph-edge encounters across the sweep. No graph expansion reported an unavailable timing window or an empty state with an observed deadline block in the 27 graph runs. The three exhausted beam frontiers had zero deadline rejections and zero missing timing windows. Deadline pressure was observable as a filter and did not explain the measured stalls.
+- **Exception allowance.** At 60,000 actual calls and 10,000 states, graph seeds 0/1/7 reached their fifth exception in 8,920/9,990/9,802 opened states. The respective numbers of empty states were 8,854/8,526/7,652. Of these, 4,732/8,353/5,293 had an exception rejection and 8,734/8,419/7,542 were blocked from fresh sampling by the orbital allowance. These categories overlap. The filter counters describe attempted continuations and can count the same physical edge against many routes. They cannot establish that a missing candidate would have succeeded if the limit were higher.
+
+At 60,000 calls the graph traversed 9,875/9,931/9,861 previously stored edges. The raw cache had one miss per call, zero hits, and no evictions. The edge index gives a previously accepted arc directly to the next path. An exact-cache hit instead requires a second evaluation request for the same pair and the same binary64 departure and duration. Random resampling rarely produces both identical timestamps. Disabling memoization gave the same calls, depths, and reused-edge counts under these settings. The exact cache still has a role when a generator deliberately revisits a fixed set of queries.
+
+At the matched 60,000-call checkpoint, the median across the three per-seed median runtimes was 582 ms for beam and 318 ms for graph. Median time inside `TransferSolver` was 567 ms and 233 ms, respectively. The remainder was about 3% of beam runtime and 26–44% for individual graph seeds. On graph seed 1, increasing the state cap from 200 to 30,000 at the same calls and depth raised the median remainder from 82 ms to 284 ms. With graph caching disabled, the median remainder across seeds was 40 ms at 10,000 states, compared with 84 ms with caching. These wall-clock measurements include timing and classification instrumentation. The remainder also includes sampling, route copying or rollback, indexing, pruning, candidate ranking, and allocation. It is the per-run total minus time inside the solver, aggregated separately. Wall time varies across seeds and runs. Equal call counts control query quantity while different timing inputs can change the work per Lambert solve. An uninstrumented run of each of the 71 CLI configurations reproduced the call count, depth, feasibility and stop reason. At 60,000 calls those native runs took 310–339 ms for beam and 151–205 ms for graph.
+
+#### Timing-window probe
+
+The search accuracy tests cover numerical parity. This probe measures whether the proposal distribution actually reaches useful time windows. It evaluates 12 directed pairs at controlled openings of days 0, 25, and 75. Two pairs are known Phase 3 reference pairs and ten come from a fixed shuffle of the other directed pairs with seed 5. With 48 legs for the local-slack calculation, each case uses an 8,385-point wait/extra-flight triangle with 128 intervals per axis, about 0.020–0.033 days apart. The separate sampler replay uses 64 seeds per case and 16 calls per trial, with 12 local and four broad-window proposals. It compares uniform and stratified local sampling under the same timing geometry. The grid uses 301,860 calls and the sampler replays use 73,728 calls. These are separate diagnostics and contribute zero search-budget calls.
+
+The local grid found admissible transfers in 25 of 36 cases and normal transfers in three. Over 2,304 trials per sampler, uniform found any admissible transfer in 1,192 trials and a normal transfer in 270. Stratified found an admissible transfer in 1,208 and a normal transfer in 283. Pair 18→13 had one admissible grid point at each opening and neither sampler found it in any 16-call trial. For 1→48, the local grid found no normal points, while the sampler with broad-window draws found normal transfers at all three openings across multiple trials. The finite grid can miss a narrow interval or an interval outside its local triangle. These probes show dependence on the pair and epoch. Neither sampler provides reliable coverage of rare useful timing windows.
+
+#### Next phase
+
+Test an exact, pair-directed time-window discovery pass before changing global search. Give each selected pair an explicit coarse discovery budget, retain the exact departure, flight, and cost of normal and exception arcs, and refine promising regions at multiple resolutions. Reserve part of the budget for pairs and epochs with few usable normal continuations. Feed those arcs to the current beam or graph traversal with visit-once, chronology, and exception constraints and keep final independent validation. At matched total call budgets measure coverage of normal outgoing options by tomato and epoch, the exception count versus depth, deepest prefix, and success at constructing independently feasible routes. Report discovery, route search, and final validation calls separately within the same budget. Save representative narrow-window fixtures from the probe.
+
+This hybrid targets the observed rarity of normal legs and the repeated exploration of saturated histories. Constraint-guided construction can use discovered normal outgoing options to choose the next destination without repeatedly paying for isolated probes. More broad lookahead or arrival-bin tuning alone had little effect in this sweep. Simulated Annealing and Genetic Algorithms remain useful candidate improvements after construction produces feasible seeds that supply meaningful neighborhoods or parents.
+
+#### Reproduce Phase 5I
+
+Run from the repository root with the same PyKEP, Boost, and UCRT64 environment variables as the Windows x64 instructions in [README](../README.md#windows-x64-build-with-transfersolver). Use a separate build folder.
+
+```powershell
+cmake -S benchmarks/phase5i -B build/phase5i/benchmark @ucrtToolchain @boostOptions `
+    "-DCMAKE_PREFIX_PATH:PATH=$pykepPrefix"
+cmake --build build/phase5i/benchmark --target phase5i_benchmark
+(Get-FileHash data/easy.kttsp -Algorithm SHA256).Hash
+./build/phase5i/benchmark/phase5i_benchmark.exe data/easy.kttsp build/phase5i/results
+```
+
+The ESA easy SHA-256 is `175256AC98BA2F557BCF889C0462A1DDF2316CB7452A6673E2313444DAB55D53`. The run writes `runs.csv`, `beam-depth.csv`, `beam-timing.csv`, and `windows.csv`. `runs.csv` records actual calls and the reason the search loop stopped. The beam depth table covers primary expansions. The graph `empty_with_*` columns indicate at least one corresponding filter or denied sample during that empty expansion. Phase 5I leaves numerical tolerances and feasibility rules unchanged.
+
+### Phase 5J transfer window discovery
+
+`TransferWindowExplorer::explore` takes a directed tomato pair, a caller-owned `TransferCache`, optional timing bounds, and search limits. Indices and orbital epochs use the existing ESA conventions. Bounds can narrow the absolute departure epoch, positive flight duration, and latest arrival. The explorer intersects them with the mission start, minimum flight time, and deadline. An empty intersection needs no calls. Invalid indices, non-finite bounds, and malformed configurations return an explicit status.
+
+The search maps a unit square into the feasible timing domain. The horizontal coordinate interpolates between the earliest and latest possible departure. At each departure, the vertical coordinate interpolates from the allowed minimum flight time to the smaller of the flight cap and remaining time before the deadline. Each actual query is checked against the deadline after binary64 arithmetic. The search evaluates the centre and boundary anchors first, then evaluates one centre per coarse cell, with an 8-by-8 grid by default. It visits coarse cells along successive diagonals to spread the first probes over both axes.
+
+Each subdivision evaluates the four child centres. Three out of every four subdivisions take the available cell with the lowest evaluated centre Delta-V. The fourth takes the shallowest available cell. Absolute Delta-V ranks normal transfers first, followed by exceptions and then finite over-ceiling values. Over-ceiling centres can therefore guide refinement toward a usable region. Failures have infinite ranking cost and stay eligible for the shallow-cell pass. Ties follow the deterministic insertion order. The second priority queue preserves some broad coverage when many nearby low-cost samples otherwise dominate.
+
+Each opportunity reports the exact evaluated departure and duration, arrival, raw Delta-V, and classification under the chosen existing policy. Unique accepted timings are sorted by increasing Delta-V. The lowest successful solve is also returned when every sampled leg exceeds the ceiling. Along a route, the exception budget and the compatibility of consecutive legs still need to be checked by route construction and independent validation. The explorer makes no full-route decision.
+
+A request's orbital allowance is the number of additional solver calls permitted on the cache, including failed solves. Cache requests use the existing cumulative cap and policy-independent exact keys. Within a single exploration repeated generated points are deduplicated by their departure and flight bits. A cache hit can still succeed at the orbital cap. The first unfunded miss terminates with the evaluation-limit status. A separate work cap counts all generated points, including duplicates and hits, so a warm cache or collapsed domain cannot create unbounded work. The maximum refinement depth also bounds resolution. The default limits are 512 actual calls, 4,096 point attempts, and eight refinement levels.
+
+For `S` generated points, cache capacity `C`, and `B` solver calls, the work outside the solver is `O(S (log(S+1) + log(C+1)))` and extra space is `O(S)` in addition to the cache. Each funded miss adds the cost of one propagation and Lambert evaluation. Both queues hold at most a constant number of entries per generated cell. Point counts measure accepted samples. Several points from one basin can all appear as opportunities.
+
+#### Matched ESA easy pair experiment
+
+The Release benchmark used GCC 16.1.0 on Windows x64 UCRT64, PyKEP C++ v2.6, and the exact ESA easy input. It used seven pairs from Phase 5I (0→1, 1→48, 11→4, 18→13, 24→9, 36→10, and 39→33), three opening epochs (days 0, 25, and 75), and two domains. The local deadline was the opening plus (200 − opening) / 48. The full deadline was day 200. Uniform and flight-stratified sampling used the existing `TimingSampler` over the same triangle as the explorer, with seeds 0, 1, and 7. The explorer is deterministic without a seed. Each run used a fresh cache, the strict policy, and exactly 128 or 512 actual calls. The benchmark rejects a run if the actual calls differ from the requested comparison count. Both benchmark executions matched in every field except timing.
+
+| Domain | Calls per run | Method | Runs | Normal / exception points | Runs with any normal | Runs with any admissible | Median ms |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Local | 128 | Explorer | 21 | 163 / 663 | 3 | 13 | 0.278 |
+| Local | 128 | Uniform | 63 | 410 / 1,426 | 9 | 35 | 0.217 |
+| Local | 128 | Stratified | 63 | 516 / 1,616 | 9 | 33 | 0.252 |
+| Local | 512 | Explorer | 21 | 1,096 / 3,757 | 3 | 14 | 1.224 |
+| Local | 512 | Uniform | 63 | 1,701 / 5,640 | 9 | 39 | 0.899 |
+| Local | 512 | Stratified | 63 | 2,075 / 6,436 | 9 | 39 | 1.017 |
+| Full | 128 | Explorer | 21 | 237 / 546 | 6 | 15 | 1.385 |
+| Full | 128 | Uniform | 63 | 241 / 1,499 | 18 | 45 | 1.502 |
+| Full | 128 | Stratified | 63 | 145 / 1,278 | 17 | 44 | 1.620 |
+| Full | 512 | Explorer | 21 | 1,746 / 2,599 | 6 | 15 | 5.800 |
+| Full | 512 | Uniform | 63 | 1,001 / 5,923 | 18 | 45 | 6.132 |
+| Full | 512 | Stratified | 63 | 596 / 5,154 | 18 | 45 | 6.446 |
+
+- **An opportunity found by refinement.** On 18→13 in the day-0 local window, the initial coarse grid had no admissible point. With 512 calls, refinement returned 38 exception points. The best was 590.729512 m/s at departure day 1.633316 and flight duration 2.435668 days. The best of all six matched random runs was 628.480402 m/s. At 128 calls the explorer's best was 627.857762 m/s.
+- **An opportunity missed by refinement.** On 36→10 in the day-0 local window at 512 calls, the explorer's best was 642.284997 m/s. Five of the six random runs found an exception transfer, with a best of 582.978947 m/s. The search also missed the day-75 local 18→13 opportunity indicated by the finer Phase 5I lattice.
+- **Normal coverage and caching.** No pair/epoch/domain gained a normal transfer exclusive to the explorer at either allowance. With 512 full-window calls it produced about 83 normal points per run, compared with about 16 for uniform and 9 for stratified. This measured denser sampling of known usable regions. Across the 588 runs there were 188,160 actual calls and zero cache hits because each run started cold and the explorer deduplicated within runs. The explorer made 26,880 calls and 26,964 misses, including one denied miss per run. Each random method made 80,640 calls and misses. A cache replay test reproduced 128 exact evaluations with 128 hits and zero new calls.
+
+The measurements support using refinement as a targeted source of verified arcs alongside continued broad exploration. Prioritize coverage of distinct departure and arrival regions and normal arcs for under-covered pairs when deciding what to carry forward. Low cost at evaluated points provides guidance, and a coarse or refined search that returns no opportunity makes no claim about unsampled points or global optimality.
+
+#### Reproduce Phase 5J
+
+Build from the repository root using the existing backend-enabled Windows x64 configuration and UCRT64 runtime PATH from [README](../README.md#windows-x64-build-with-transfersolver).
+
+```powershell
+cmake --build build/transfer-x64 --target transfer_window_benchmark
+New-Item -ItemType Directory -Force build/phase5j | Out-Null
+./build/transfer-x64/window-benchmark/transfer_window_benchmark.exe data/easy.kttsp build/phase5j/comparison.csv
+ctest --test-dir build/transfer-x64 --output-on-failure
+```
+
+The CSV records actual calls, hits, misses, budget denials, classification counts, minimum Delta-V and best accepted timing for every case. On non-Windows builds use the benchmark executable in the build root. The benchmark and explorer targets are enabled by `KTTSP_ENABLE_TRANSFER_SOLVER`.
+
 ## Search guidance for infeasible candidates
 
 Keep exploratory candidates separate from the feasible incumbent. Discard a structurally invalid decode that cannot be repaired. For structurally valid candidates with valid problem limits, use the per-leg statuses and raw costs to compute this lexicographic search key:
