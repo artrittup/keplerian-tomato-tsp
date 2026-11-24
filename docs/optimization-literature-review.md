@@ -140,3 +140,64 @@ Get-FileHash tests/fixtures/esa-easy-fixed-order-seed0-earliest.sol,build/phase6
 ### Implications for order-first search
 
 The experiment demonstrates that a complete known permutation can be scheduled using exact transfer evidence discovered without its reference times. Retaining different exception counts improved every partial comparison and both successful completion times. The high cost was generating compatible time-stamped options. A future permutation search should reuse a persistent directed transfer table across orders, use witnessed normal and exception connectivity to screen orders cheaply, and schedule a shortlist of candidates with the exception-label decoder. A visit order found by that next stage will need to pass the same strict verification. [Weise et al.](https://thomasweise.github.io/assets/papers/WALW2026STS4C2WAMSPEFTKTS.pdf)
+
+## Phase 6B permutation screening
+
+### Published method and adaptation
+
+Weise et al. use heuristic timing optimization to precompute a directed matrix. Value `2` records a normal witness, `1` an exception witness with no normal witness found, and `0` a pair for which preprocessing failed to find an admissible witness. They explicitly qualify the matrix as heuristic. Their decoder splits a permutation into normal-connected fragments, merges or inserts compatible fragments, relaxes the joins to allow exceptions, and concatenates any remaining fragments. It screens the resulting order by counts of `0` and `1` entries before searching departure and arrival times leg by leg. It starts each leg's timing search at the previous arrival and tries the normal ceiling first. Their outer randomized local search uses swaps of geometrically distributed size, restarts, occasional Frequency Fitness Assignment, and a separate more expensive timing pass for selected improvements. The paper reports an average of 2.8 normal and 16.76 exception-only successors per tomato on Small. [GECCO Companion paper, §§2–4](https://doi.org/10.1145/3795101.3815557) · [Author's copy](https://thomasweise.github.io/assets/papers/WALW2026STS4C2WAMSPEFTKTS.pdf) · [Authors' slides](https://raw.githubusercontent.com/thomasweise/talks/2ecf3a43599c4116d48245a8626520845b27b5a7/slides/gecco2026_spoc4_keplerian_tsp/gecco2026_spoc4_keplerian_tsp.tex)
+
+Phase 6B keeps the shared directed-pair evidence and cheap scoring stages. Its trials are independently drawn one-move neighbors and uniformly shuffled complete orders. A swap exchanges two positions, an insertion moves one tomato to a specified final position, and a reversal flips an inclusive segment. The route is an open path, so the screen considers `N-1` directed edges. Reversal changes the direction of every edge inside the segment. Phase 6B stops at scoring the proposed order. The fragment decoder, randomized local search loop, and timing optimization from the paper are separate future work. [Implementation](../src/PermutationScreening.cpp)
+
+### Evidence and score
+
+The matrix owns a fixed `Problem` snapshot in `TransferCache`. Its cells cover all directed non-self pairs up to a configurable capacity of 100,000 pairs by default. A sweep divides a shared actual-call cap among pairs and cycles through sources at each destination offset. The discovery method is `TransferWindowExplorer` under the strict policy. It samples within the mission's epochs, minimum flight duration, and deadline, optionally with a tighter discovery flight cap. Failed orbital evaluations consume the call budget. Cache hits use exact keys and consume proposal work but no orbital calls. Each window has a proposal cap as well, so duplicate or cached samples cannot make a request run indefinitely. A sweep can leave budget unused when a pair fails to use its quota. [Transfer-window exploration](../src/TransferWindowExplorer.cpp) · [Exact cache](../src/TransferCache.cpp)
+
+Each cell retains counts of normal, exception, over-ceiling, and solver-failure samples. Its summary is normal-observed if a normal witness exists, exception-observed if there is only an exception witness, rejected-only if finite sampled costs exceed the exception ceiling and there are no admissible witnesses, and unknown if no finite cost was measured. Solver failures alone leave a pair unknown. Repeated exact queries in different windows can contribute to the sample counts through the cache. Both unknown and rejected-only pairs remain unresolved outside the sampled timings.
+
+The ranking key is lexicographic in ascending order. Compare unsupported legs first (`rejected-only + unknown`), then observed exception-only legs above `Problem::maxExceptions`, then incompatible joins, then rejected-only legs, then exception-only legs. For a fixed number of legs, fewer unsupported and exception-only edges implies more witnessed normal connectivity. On a tie in unsupported count and preceding keys, an unsampled leg receives a better rank than an already sampled rejected-only leg. This preference allocates attention during screening. It has no effect on ESA's feasibility thresholds.
+
+For adjacent legs with witnesses, the checker compares the earliest sampled arrival on the first leg with the latest sampled departure on the next. If the former is later, these observed options have no chronological join. With no witness on either leg, the join is unassessed. A compatible join can rely on an exception, and neighboring joins can select different timings for their common leg. Exception-only counts are conditional on the discovery budget and timing domain. Full feasibility requires one consistent schedule and strict recomputation of all legs through `SolutionEvaluator`. The ranking key has no units of time.
+
+### ESA easy results
+
+Built with the existing Windows x64 UCRT64 and PyKEP v2.6 Release configuration. Each run built its table once from `data/easy.kttsp` across 2,352 directed pairs. `data/easy.order` was used only as the labelled ESA reference order and the source of one-move neighbors. The random group was generated independently of its indices' ordering. No original, repaired, or Phase 6A solution schedule was read. The seeds control the order draws. Discovery is deterministic and independent of the seed and permutation. Each comparison used 1,000 draws per operator and 1,000 random orders, with replacement. The time column measures a single local run.
+
+| Calls per pair | Sampled flight cap | Seed | Actual calls | Normal / exception-only / rejected-only / unknown pairs | Build time | Score 4,001 orders |
+| ---: | --- | ---: | ---: | --- | ---: | ---: |
+| 64 | 8 days | 0 | 150,528 | 131 / 753 / 1,468 / 0 | 1.056 s | 2.166 ms |
+| 512 | 8 days | 0 | 1,204,224 | 135 / 790 / 1,427 / 0 | 9.638 s | 2.430 ms |
+| 512 | 8 days | 7 | 1,204,224 | 135 / 790 / 1,427 / 0 | 9.549 s | 2.263 ms |
+| 512 | Mission-wide | 0 | 1,204,224 | 138 / 795 / 1,419 / 0 | 25.762 s | 2.444 ms |
+
+The table build had zero exact cache hits and zero solver failures in these runs. Each sweep queried each directed pair once and the explorer deduplicated exact times within that query. There were 2,352 budget denials per run, one unexecuted request at each pair cap. The scoring phase made zero orbital calls. The eight-day cap is a sampling choice. `full` samples the problem's full flight domain at the same orbital-call cap.
+
+At 512 calls per pair and an eight-day flight cap, the seed-0 scoring statistics were as follows. The normal, exception-only, rejected-only, and temporal columns are per-order means. Unknown legs were zero in these four experiments because every pair had at least one finite evaluation.
+
+| Order group | Normal | Exception-only | Rejected-only | Incompatible joins | Unassessed joins | Lower rank key / tied with reference |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ESA reference order | 44 | 4 | 0 | 0 | 0 | 0 / 1 |
+| Swap | 40.649 | 5.044 | 2.307 | 0.003 | 3.468 | 0 / 31 |
+| Insertion | 41.653 | 5.113 | 1.234 | 0.008 | 1.800 | 0 / 24 |
+| Reversal | 42.310 | 4.490 | 1.200 | 0.000 | 2.339 | 0 / 26 |
+| Random | 2.705 | 16.082 | 29.213 | 0.023 | 39.281 | 0 / 0 |
+
+At 64 calls per pair the reference had 43 witnessed normal and five exception-only legs. Three insertion draws and one reversal draw scored better by showing four exception-only legs and no unsupported legs or incompatible joins. At the larger budget the reference itself showed 44 normal and four exception-only legs. No trial beat its key in the two larger-budget seeds or in the mission-wide run. The mission-wide sampling found three more normal pairs overall at the same call budget and took about 2.7 times as long as the eight-day run. The very low incompatible-join means show that local chronology was a weak discriminator in these sweeps. The screening experiment establishes neither a new feasible order nor a mission time improvement. The reference permutation still has the separate Phase 6A verified time of 176.88137704611736 days.
+
+### Complexity and reproduction
+
+`N` tomatoes require `N(N-1)` compact cell summaries. If `C` is cache capacity and `S` the largest per-pair proposal cap, the matrix build uses `O(N² + C + S)` storage including temporary exploration data. It spends at most the configured orbital calls, plus per-proposal explorer and cache work. Scoring takes `O(N)` time and `O(N)` temporary space for permutation validation. A swap is `O(1)` in place. Insertion and reversal cost time proportional to the modified segment. The experiment copies the reference for each trial. The matrix build can be amortized across as many permutations as the caller chooses to score.
+
+Run from the repository root with the backend-enabled configuration and its UCRT64 runtime PATH. The non-Windows Ninja executable is at the build root.
+
+```powershell
+cmake --build build/transfer-x64 --target permutation_screen permutation_screen_tests
+$screen = './build/transfer-x64/permutation-screen/permutation_screen.exe'
+& $screen data/easy.kttsp data/easy.order 0 150528 1000 8
+& $screen data/easy.kttsp data/easy.order 0 1204224 1000 8
+& $screen data/easy.kttsp data/easy.order 7 1204224 1000 8
+& $screen data/easy.kttsp data/easy.order 0 1204224 1000 full
+ctest --test-dir build/transfer-x64 -R '^permutation_screen_' --output-on-failure
+```
+
+The evidence supports trying directed normal-fragment assembly before budgeting for timing. Keep a shortlist of orders with strong connectivity and resample a small number of uncertain joins. Use fixed-order scheduling and strict validation on that shortlist before comparing mission times. The best ranking for choosing which orders warrant that expense remains an open measurement question.

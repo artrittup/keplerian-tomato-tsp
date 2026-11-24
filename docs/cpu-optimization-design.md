@@ -520,6 +520,8 @@ Let `C[i]` denote the cost of transfer evaluation for leg `i`, including propaga
 
 ## Bottlenecks and implementation sequence
 
+Phase 6A verified that the published ESA order can be scheduled with independently generated timings. Phase 6B evaluates visit orders using one shared directed evidence matrix. It screens thousands of orders with no additional orbital calls once the matrix is built. The next order-construction experiment can use witnessed normal-transfer fragments, then send a bounded shortlist to fixed-order scheduling and strict validation. [Phase 6A and 6B results](optimization-literature-review.md#phase-6b-permutation-screening)
+
 Propagation and Lambert solving are expected to dominate. A timing edit early in a route can change many downstream evaluations. Measure repeated queries by an exact key of instance/backend identity, from/to indices and the binary64 departure and duration. Cache raw results only, then apply the configured policy. Rounded or grid-based costs can guide proposals. Use exact transfer computation for feasibility. Candidate extensions at one beam depth, independent starts, local proposals from the same incumbent and GA individuals can be batched. Reduce results in a fixed order and keep serial decisions between depths or accepted local moves. Parallel CPU evaluation also needs a thread-safety check of the pinned backend. Profile batch sizes and Lambert work variability before designing a CUDA backend.
 
 1. Define the seed, budget and trace format. Test decoding, mutation and deterministic exact leg-call accounting on synthetic inputs.

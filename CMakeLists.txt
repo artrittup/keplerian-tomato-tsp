@@ -42,6 +42,9 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(fixed_order_scheduler STATIC src/FixedOrderScheduler.cpp)
     target_link_libraries(fixed_order_scheduler PUBLIC transfer_window_explorer PRIVATE solution_evaluator)
 
+    add_library(permutation_screening STATIC src/PermutationScreening.cpp)
+    target_link_libraries(permutation_screening PUBLIC transfer_window_explorer)
+
     add_library(graph_search STATIC src/GraphSearch.cpp)
     target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
 
@@ -64,6 +67,8 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     target_link_libraries(transfer_window_benchmark PRIVATE transfer_window_explorer partial_route)
     add_executable(fixed_order_schedule src/FixedOrderScheduleCli.cpp src/Problem.cpp)
     target_link_libraries(fixed_order_schedule PRIVATE fixed_order_scheduler)
+    add_executable(permutation_screen src/PermutationScreenCli.cpp src/Problem.cpp)
+    target_link_libraries(permutation_screen PRIVATE permutation_screening fixed_order_scheduler)
 
     if(WIN32)
         copy_pykep_runtime(keplerian_tsp)
@@ -71,6 +76,10 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixed-order"
         )
         copy_pykep_runtime(fixed_order_schedule)
+        set_target_properties(permutation_screen PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/permutation-screen"
+        )
+        copy_pykep_runtime(permutation_screen)
         set_target_properties(transfer_window_benchmark PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/window-benchmark"
         )
@@ -119,6 +128,8 @@ if(BUILD_TESTING)
         add_executable(fixed_order_tests tests/FixedOrderSchedulerTests.cpp src/Problem.cpp)
         target_include_directories(fixed_order_tests PRIVATE src)
         target_link_libraries(fixed_order_tests PRIVATE fixed_order_scheduler solution_evaluator)
+        add_executable(permutation_screen_tests tests/PermutationScreeningTests.cpp src/Problem.cpp)
+        target_link_libraries(permutation_screen_tests PRIVATE permutation_screening)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -145,6 +156,10 @@ if(BUILD_TESTING)
             set_target_properties(fixed_order_tests PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixed-order-tests"
             )
+            set_target_properties(permutation_screen_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/permutation-screen-tests"
+            )
+            copy_pykep_runtime(permutation_screen_tests)
             foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests transfer_window_tests fixed_order_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
@@ -196,6 +211,15 @@ if(BUILD_TESTING)
             --max-evaluations 96 --seed 7
         )
         set_tests_properties(fixed_order_cli PROPERTIES PASS_REGULAR_EXPRESSION "Discovery calls: 48")
+        foreach(test_case IN ITEMS validity operators evidence chronology score limits reproducibility)
+            add_test(NAME permutation_screen_${test_case} COMMAND permutation_screen_tests ${test_case}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            )
+        endforeach()
+        add_test(NAME permutation_screen_cli COMMAND permutation_screen
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.order" 0 49 8
+        )
+        set_tests_properties(permutation_screen_cli PROPERTIES PASS_REGULAR_EXPRESSION "Orbital calls: 49")
         add_test(NAME graph_search_cli COMMAND keplerian_tsp --graph-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )

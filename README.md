@@ -55,7 +55,7 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **93 tests**, including the transfer graph, cache, bounded graph-search, transfer-window, hybrid timing, and fixed-order scheduling suites. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **101 tests**, including fixed-order scheduling and permutation screening. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
 
@@ -108,6 +108,16 @@ The seed-0 earliest-arrival fixture uses ESA's published visit order and timings
 ```powershell
 cmake --build build/transfer-x64 --target fixed_order_tests
 ctest --test-dir build/transfer-x64 -R '^fixed_order_seed0_reference$' --output-on-failure
+```
+
+### Permutation screening experiment
+
+`permutation_screen` builds a shared table of strict transfer evidence from the instance. It scores ESA's reference order, one-move swap, insertion, and reversal neighbors, and randomly shuffled orders. The example uses seed `0`, a shared cap of `150528` orbital calls, `1000` trials per comparison group, and an eight-day sampled flight cap. Scores compare witnessed connections and local timing. Full feasibility and mission duration require a timed solution and strict evaluation. [Method and results](docs/optimization-literature-review.md#phase-6b-permutation-screening)
+
+```powershell
+cmake --build build/transfer-x64 --target permutation_screen permutation_screen_tests
+./build/transfer-x64/permutation-screen/permutation_screen.exe data/easy.kttsp data/easy.order 0 150528 1000 8
+ctest --test-dir build/transfer-x64 -R '^permutation_screen_' --output-on-failure
 ```
 
 <details>
