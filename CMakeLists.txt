@@ -33,6 +33,9 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(partial_route STATIC src/PartialRoute.cpp)
     target_link_libraries(partial_route PUBLIC solution_evaluator)
 
+    add_library(transfer_graph STATIC src/TransferCache.cpp src/TransferGraph.cpp)
+    target_link_libraries(transfer_graph PUBLIC transfer_solver solution)
+
     add_library(beam_search STATIC src/BeamSearch.cpp)
     target_link_libraries(beam_search PUBLIC partial_route)
     target_sources(keplerian_tsp PRIVATE src/BeamSearchCli.cpp)
@@ -85,6 +88,8 @@ if(BUILD_TESTING)
         add_executable(beam_search_tests tests/BeamSearchTests.cpp)
         target_link_libraries(beam_search_tests PRIVATE beam_search)
         target_include_directories(beam_search_tests PRIVATE src)
+        add_executable(transfer_graph_tests tests/TransferGraphTests.cpp src/Problem.cpp)
+        target_link_libraries(transfer_graph_tests PRIVATE transfer_graph partial_route)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -99,7 +104,10 @@ if(BUILD_TESTING)
             set_target_properties(beam_search_tests PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/beam-search-tests"
             )
-            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests)
+            set_target_properties(transfer_graph_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transfer-graph-tests"
+            )
+            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
         endif()
@@ -121,6 +129,11 @@ if(BUILD_TESTING)
         endforeach()
         foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay lookahead_budget lookahead_replay lookahead_promotion)
             add_test(NAME beam_${test_case} COMMAND beam_search_tests ${test_case})
+        endforeach()
+        foreach(test_case IN ITEMS reuse timings pairs partial_routes failures policies isolation budget eviction graph route_constraints)
+            add_test(NAME transfer_graph_${test_case} COMMAND transfer_graph_tests ${test_case}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            )
         endforeach()
         add_test(NAME beam_cli COMMAND keplerian_tsp --beam-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11

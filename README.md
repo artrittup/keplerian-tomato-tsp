@@ -55,7 +55,7 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **49 tests**, including fifteen beam-search and CLI tests. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **60 tests**, including eleven transfer graph and cache tests. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
 
@@ -74,6 +74,8 @@ Use `--timing stratified` to spread the short-window proposals across flight-dur
 Use `--selection temporal` to try arrival-bin selection and `--arrival-bin-days DAYS` to set the maximum bin width. The original ranking remains the default. `--diagnostics` includes the retained arrival distribution per depth. [Diversity benchmark](docs/cpu-optimization-design.md#diversity-aware-beam-selection)
 
 Use `--selection lookahead` for exact one-step continuation probes. Set `--lookahead-probes N` to cap probes per shortlisted prefix. All calls share the same orbital budget. [Lookahead experiment](docs/cpu-optimization-design.md#constraint-guided-one-step-lookahead)
+
+The `transfer_graph` library provides an exact, capacity-limited transfer cache and sparse graph storage. It can reconstruct a supplied path. [Graph and cache design](docs/cpu-optimization-design.md#phase-5g-graph-and-cache-foundations)
 
 <details>
 <summary>Preparing a PyKEP v2.6 package from source</summary>
