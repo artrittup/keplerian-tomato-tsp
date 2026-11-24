@@ -12,7 +12,8 @@
 enum class BeamTimingStrategy
 {
     Baseline,
-    Stratified
+    Stratified,
+    Hybrid
 };
 
 enum class BeamSelectionStrategy
@@ -35,6 +36,10 @@ struct BeamSearchConfig
     BeamSelectionStrategy selectionStrategy = BeamSelectionStrategy::Baseline;
     double arrivalBinDays = 1.0; // Maximum width of each preferred temporal bin.
     std::size_t lookaheadProbes = 8; // Maximum probes per shortlisted prefix.
+    std::size_t hybridRefinementPercent = 25;
+    std::size_t hybridRefinementRegions = 4; // Maximum regions per prefix.
+    std::size_t hybridExplorationPercent = 25; // Full-window share of broad probes.
+    std::size_t hybridCacheCapacity = 16384;
 };
 
 enum class BeamSearchStop
@@ -75,6 +80,10 @@ struct BeamDepthStats
     std::optional<double> latestAcceptedArrivalDays;
     std::optional<double> latestRetainedArrivalDays;
     std::array<std::size_t, beamArrivalBinEdges.size() + 1> retainedArrivalBins{};
+    std::size_t normalExtensions = 0;
+    std::size_t exceptionExtensions = 0;
+    std::size_t retainedExceptionsUsed = 0; // Sum across kept prefixes at this depth.
+    std::size_t refinementSolverFailures = 0; // The explorer reports failures without finer status counts.
 };
 
 struct BeamTimingBucket
@@ -111,6 +120,13 @@ struct BeamSearchStats
     std::size_t completeRoutesFound = 0; // Complete prefixes before pruning or validation.
     std::size_t completeRoutesValidated = 0;
     std::size_t completeFeasibleRoutes = 0;
+    std::size_t hybridBroadEvaluations = 0;
+    std::size_t hybridRefinementEvaluations = 0;
+    std::size_t hybridRefinedRegions = 0;
+    std::size_t hybridDuplicateProposals = 0;
+    std::size_t hybridCacheHits = 0;
+    std::size_t hybridCacheMisses = 0;
+    std::size_t hybridCacheDenials = 0;
     std::vector<int> startingTomatoes;
     // Entry zero contains extensions from one visited tomato. Validation calls are tracked separately.
     std::vector<BeamDepthStats> byDepth;

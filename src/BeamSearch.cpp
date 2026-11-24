@@ -1,5 +1,6 @@
 #include "BeamSearch.hpp"
 
+#include "BeamHybrid.hpp"
 #include "BeamSelection.hpp"
 #include "PartialRoute.hpp"
 #include "Problem.hpp"
@@ -8,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <random>
 #include <tuple>
 #include <unordered_set>
@@ -152,7 +154,9 @@ class Search
 {
 public:
     Search(const Problem &problem, BeamSearchResult &result)
-        : problem_(problem), result_(result), config_(result.config), stats_(result.stats),
+        : cache_(result.config.timingStrategy == BeamTimingStrategy::Hybrid
+                     ? std::make_unique<TransferCache>(problem, result.config.hybridCacheCapacity) : nullptr),
+          problem_(cache_ ? cache_->problem() : problem), result_(result), config_(result.config), stats_(result.stats),
           legCount_(problem.tomatoes.size() - 1), width_(std::min(config_.beamWidth, problem.tomatoes.size())),
           orderRandom_(config_.seed), timingSampler_(orderRandom_()),
           lookaheadOrderRandom_(~config_.seed), lookaheadSampler_(lookaheadOrderRandom_())
@@ -214,6 +218,7 @@ public:
                     ++depth.retainedArrivalBins[static_cast<std::size_t>(bin - beamArrivalBinEdges.begin())];
                     depth.retainedAtExceptionLimit +=
                         entry.route.exceptionsUsed() == static_cast<std::size_t>(problem_.maxExceptions);
+                    depth.retainedExceptionsUsed += entry.route.exceptionsUsed();
                 }
                 std::sort(beam.begin(), beam.end(), ranksBefore);
                 stats_.peakBeamSize = std::max(stats_.peakBeamSize, beam.size());
@@ -227,6 +232,13 @@ public:
                 ++stats_.attemptsLimitedByBudget;
                 result_.stop = BeamSearchStop::EvaluationLimit;
             }
+        }
+        if (cache_)
+        {
+            const auto cacheStats = cache_->stats();
+            stats_.hybridCacheHits = cacheStats.hits;
+            stats_.hybridCacheMisses = cacheStats.misses;
+            stats_.hybridCacheDenials = cacheStats.budgetDenials;
         }
     }
 
@@ -339,7 +351,7 @@ private:
         {
             return sampler.sample(parent);
         }
-        if (config_.timingStrategy == BeamTimingStrategy::Stratified)
+        if (config_.timingStrategy != BeamTimingStrategy::Baseline)
         {
             const auto localSamples = sampleCount - sampleCount / 4;
             return sampler.sampleStratified(parent, slack, sample - sample / 4, localSamples);
@@ -361,14 +373,19 @@ private:
                 break;
             }
             const int target = targets[i % targetCount];
-            auto extension = candidate.route.extend(target, *timing);
+            const auto before = cache_ ? cache_->stats().solverCalls : 0;
+            auto extension = cache_
+                ? beam_detail::HybridTiming::evaluate(*cache_, candidate.route, target, *timing,
+                                                       before + (limit - stats_.evaluationsAttempted))
+                : candidate.route.extend(target, *timing);
             if (!extension.transfer)
             {
                 continue;
             }
-            ++stats_.evaluationsAttempted;
-            ++stats_.lookaheadEvaluations;
-            ++depth.lookaheadEvaluations;
+            const bool paid = !cache_ || cache_->stats().solverCalls != before;
+            stats_.evaluationsAttempted += paid;
+            stats_.lookaheadEvaluations += paid;
+            depth.lookaheadEvaluations += paid;
             if (extension.route)
             {
                 ++stats_.lookaheadAccepted;
@@ -466,11 +483,13 @@ private:
         return frontier;
     }
 
-    void offerExtension(std::vector<RankedRoute> &next, PartialRoute child, std::size_t order,
-                        std::size_t capacity, bool temporal, BeamDepthStats &depth)
+    void offerExtension(std::vector<RankedRoute> &next, const PartialRoute &parent, PartialRoute child,
+                        std::size_t order, std::size_t capacity, bool temporal, BeamDepthStats &depth)
     {
         ++stats_.successfulExtensions;
         ++depth.accepted;
+        depth.normalExtensions += child.exceptionsUsed() == parent.exceptionsUsed();
+        depth.exceptionExtensions += child.exceptionsUsed() != parent.exceptionsUsed();
         recordLatest(depth.latestAcceptedArrivalDays, child.arrivalDays());
         stats_.deepestPrefix = std::max(stats_.deepestPrefix, child.prefix().visitingOrder.size());
         stats_.completeRoutesFound += child.remainingLegs() == 0;
@@ -501,7 +520,7 @@ private:
             if (entry.witness)
             {
                 ++stats_.lookaheadReused;
-                offerExtension(next, std::move(entry.witness->child), entry.witness->proposalOrder, capacity,
+                offerExtension(next, entry.route, std::move(entry.witness->child), entry.witness->proposalOrder, capacity,
                                temporal, depth);
             }
         }
@@ -511,6 +530,16 @@ private:
             ++depth.prefixesExamined;
             const auto &parent = entry.route;
             const double slack = localSlack(parent);
+            if (cache_)
+            {
+                if (stats_.evaluationsAttempted == limit)
+                {
+                    attemptLimited_ = true;
+                    break;
+                }
+                expandHybrid(next, entry, limit, slack, capacity, temporal, depth);
+                continue;
+            }
             for (const int destination : destinations(parent, depth))
             {
                 for (std::size_t i = 0; i < config_.samplesPerDestination; ++i)
@@ -546,12 +575,56 @@ private:
                         continue;
                     }
 
-                    offerExtension(next, std::move(*extension.route), stats_.evaluationsAttempted, capacity,
+                    offerExtension(next, parent, std::move(*extension.route), stats_.evaluationsAttempted, capacity,
                                    temporal, depth);
                 }
             }
         }
         return selectFrontier(std::move(next), temporal, guided, limit, beforeExpansion, depth);
+    }
+
+    void expandHybrid(std::vector<RankedRoute> &next, const RankedRoute &entry, std::size_t limit, double slack,
+                      std::size_t capacity, bool temporal, BeamDepthStats &depth)
+    {
+        const auto &parent = entry.route;
+        const auto witness = entry.witness
+            ? std::optional{std::make_pair(entry.witness->destination, entry.witness->timing)} : std::nullopt;
+        auto batch = beam_detail::HybridTiming::expand(*cache_, parent, destinations(parent, depth), timingSampler_,
+                                                      config_, slack, limit - stats_.evaluationsAttempted, witness);
+        const auto paid = batch.broadCalls + batch.refinementCalls;
+        stats_.evaluationsAttempted += paid;
+        depth.evaluations += paid;
+        stats_.hybridBroadEvaluations += batch.broadCalls;
+        stats_.hybridRefinementEvaluations += batch.refinementCalls;
+        stats_.hybridRefinedRegions += batch.refinedRegions;
+        stats_.hybridDuplicateProposals += batch.duplicateProposals;
+        depth.destinationsWithoutTiming += batch.destinationsWithoutTiming;
+
+        stats_.transferFailures += batch.refinementSolverFailures;
+        stats_.deltaVRejections += batch.refinementAboveCeiling;
+        const auto rejected = batch.refinementSolverFailures + batch.refinementAboveCeiling;
+        stats_.rejectedExtensions += rejected;
+        depth.rejected += rejected;
+        depth.deltaVExceeded += batch.refinementAboveCeiling;
+        depth.refinementSolverFailures += batch.refinementSolverFailures;
+        for (auto &proposal : batch.proposals)
+        {
+            auto &extension = proposal.extension;
+            if (proposal.paidBroadCall)
+            {
+                recordTiming(stats_.byWait[timingBin(proposal.timing.departureDays - parent.arrivalDays())], extension);
+                recordTiming(stats_.byFlight[timingBin(proposal.timing.flightDays)], extension);
+            }
+            if (extension.route)
+            {
+                offerExtension(next, parent, std::move(*extension.route), stats_.evaluationsAttempted, capacity,
+                               temporal, depth);
+            }
+            else
+            {
+                recordRejection(extension, depth);
+            }
+        }
     }
 
     void validateComplete(const std::vector<RankedRoute> &beam, std::size_t limit)
@@ -584,6 +657,7 @@ private:
         }
     }
 
+    std::unique_ptr<TransferCache> cache_;
     const Problem &problem_;
     BeamSearchResult &result_;
     const BeamSearchConfig &config_;
@@ -608,7 +682,10 @@ BeamSearchResult BeamSearch::run(const Problem &problem, const BeamSearchConfig 
     if (config.beamWidth == 0 || config.destinationsPerRoute == 0 || config.samplesPerDestination == 0 ||
         config.restartCount == std::numeric_limits<std::size_t>::max() ||
         !std::isfinite(config.arrivalBinDays) || config.arrivalBinDays <= 0.0 ||
-        (config.selectionStrategy == BeamSelectionStrategy::Lookahead && config.lookaheadProbes == 0))
+        (config.selectionStrategy == BeamSelectionStrategy::Lookahead && config.lookaheadProbes == 0) ||
+        (config.timingStrategy == BeamTimingStrategy::Hybrid &&
+         (config.hybridRefinementPercent > 99 || config.hybridExplorationPercent > 100 ||
+          (config.hybridRefinementPercent != 0 && config.hybridRefinementRegions == 0))))
     {
         result.stop = BeamSearchStop::InvalidConfig;
     }

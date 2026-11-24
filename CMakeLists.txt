@@ -42,8 +42,8 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(graph_search STATIC src/GraphSearch.cpp)
     target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
 
-    add_library(beam_search STATIC src/BeamSearch.cpp)
-    target_link_libraries(beam_search PUBLIC partial_route)
+    add_library(beam_search STATIC src/BeamSearch.cpp src/BeamHybrid.cpp)
+    target_link_libraries(beam_search PUBLIC partial_route PRIVATE transfer_window_explorer)
     target_sources(keplerian_tsp PRIVATE src/BeamSearchCli.cpp src/GraphSearchCli.cpp)
     target_compile_definitions(keplerian_tsp PRIVATE KTTSP_HAS_BEAM_SEARCH)
     target_link_libraries(keplerian_tsp PRIVATE beam_search graph_search)
@@ -150,7 +150,7 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()
-        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay lookahead_budget lookahead_replay lookahead_promotion)
+        foreach(test_case IN ITEMS deterministic width budget duplicate failure feasible singleton stratified diagnostics temporal_bins temporal_replay lookahead_budget lookahead_replay lookahead_promotion hybrid_sampling hybrid_budget hybrid_cache hybrid_classification hybrid_replay hybrid_baseline)
             add_test(NAME beam_${test_case} COMMAND beam_search_tests ${test_case})
         endforeach()
         foreach(test_case IN ITEMS reuse timings pairs partial_routes failures policies isolation budget eviction graph route_constraints)
@@ -176,5 +176,10 @@ if(BUILD_TESTING)
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )
         set_tests_properties(beam_cli PROPERTIES PASS_REGULAR_EXPRESSION "Orbital evaluations: 5 / 5")
+        add_test(NAME beam_hybrid_cli COMMAND keplerian_tsp --beam-search
+            --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --timing hybrid
+            --max-evaluations 5 --seed 11 --hybrid-refinement-percent 0 --transfer-stats
+        )
+        set_tests_properties(beam_hybrid_cli PROPERTIES PASS_REGULAR_EXPRESSION "Broad orbital evaluations: 5")
     endif()
 endif()

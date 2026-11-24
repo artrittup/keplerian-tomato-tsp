@@ -46,15 +46,15 @@ double PartialRoute::latestLegArrivalDays() const
     return problem_->maxTotalTime - laterLegs * problem_->minTimeOfFlight;
 }
 
-RouteExtensionResult PartialRoute::extend(int destination, LegTiming timing) const
+RouteExtensionStatus PartialRoute::checkExtension(int destination, LegTiming timing) const
 {
     if (!validIndex(destination, visited_.size()))
     {
-        return {RouteExtensionStatus::InvalidDestination, std::nullopt, std::nullopt};
+        return RouteExtensionStatus::InvalidDestination;
     }
     if (hasVisited(destination))
     {
-        return {RouteExtensionStatus::AlreadyVisited, std::nullopt, std::nullopt};
+        return RouteExtensionStatus::AlreadyVisited;
     }
 
     const double arrival = timing.departureDays + timing.flightDays;
@@ -62,17 +62,31 @@ RouteExtensionResult PartialRoute::extend(int destination, LegTiming timing) con
         !std::isfinite(timing.flightDays) || timing.flightDays <= 0.0 ||
         timing.flightDays < problem_->minTimeOfFlight || !std::isfinite(arrival))
     {
-        return {RouteExtensionStatus::InvalidTiming, std::nullopt, std::nullopt};
+        return RouteExtensionStatus::InvalidTiming;
     }
     if (arrival > latestLegArrivalDays())
     {
-        return {RouteExtensionStatus::DeadlineExceeded, std::nullopt, std::nullopt};
+        return RouteExtensionStatus::DeadlineExceeded;
     }
+    return RouteExtensionStatus::Ok;
+}
 
+RouteExtensionResult PartialRoute::extend(int destination, LegTiming timing) const
+{
+    const auto status = checkExtension(destination, timing);
+    if (status != RouteExtensionStatus::Ok)
+    {
+        return {status, std::nullopt, std::nullopt};
+    }
     const auto sourceIndex = static_cast<std::size_t>(prefix_.visitingOrder.back());
     const auto destinationIndex = static_cast<std::size_t>(destination);
     const auto transfer = TransferSolver::evaluate(*problem_, sourceIndex, destinationIndex,
                                                     timing.departureDays, timing.flightDays);
+    return appendEvaluated(destination, timing, transfer);
+}
+
+RouteExtensionResult PartialRoute::appendEvaluated(int destination, LegTiming timing, TransferResult transfer) const
+{
     if (transfer.status != TransferStatus::Ok)
     {
         return {RouteExtensionStatus::TransferFailed, std::nullopt, transfer};
@@ -93,8 +107,8 @@ RouteExtensionResult PartialRoute::extend(int destination, LegTiming timing) con
     child.prefix_.visitingOrder.push_back(destination);
     child.prefix_.departureTimes.push_back(timing.departureDays);
     child.prefix_.timesOfFlight.push_back(timing.flightDays);
-    child.visited_[destinationIndex] = true;
-    child.arrivalDays_ = arrival;
+    child.visited_[static_cast<std::size_t>(destination)] = true;
+    child.arrivalDays_ = timing.departureDays + timing.flightDays;
     child.exceptionsUsed_ = exceptions;
     return {RouteExtensionStatus::Ok, std::move(child), transfer};
 }

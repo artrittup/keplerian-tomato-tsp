@@ -35,6 +35,7 @@ enum class RouteExtensionStatus
 };
 
 struct RouteExtensionResult;
+namespace beam_detail { class HybridTiming; }
 
 struct CompletedRoute
 {
@@ -63,8 +64,11 @@ public:
 private:
     PartialRoute(const Problem &problem, int firstTomato, DeltaVPolicy policy);
     double latestLegArrivalDays() const; // Requires at least one remaining leg.
+    RouteExtensionStatus checkExtension(int destination, LegTiming timing) const;
+    RouteExtensionResult appendEvaluated(int destination, LegTiming timing, TransferResult transfer) const;
 
     friend class TimingSampler;
+    friend class beam_detail::HybridTiming;
 
     const Problem *problem_;
     DeltaVPolicy policy_;
@@ -78,7 +82,7 @@ struct RouteExtensionResult
 {
     RouteExtensionStatus status;
     std::optional<PartialRoute> route;
-    std::optional<TransferResult> transfer; // Present when the extension made one solver call.
+    std::optional<TransferResult> transfer; // Raw result when the transfer has been evaluated.
 };
 
 class TimingSampler

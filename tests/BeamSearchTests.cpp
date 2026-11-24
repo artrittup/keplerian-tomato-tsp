@@ -1,4 +1,5 @@
 #include "BeamSearch.hpp"
+#include "BeamHybrid.hpp"
 #include "BeamSelection.hpp"
 #include "PartialRoute.hpp"
 #include "Problem.hpp"
@@ -6,8 +7,10 @@
 
 #include <algorithm>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 
 namespace
 {
@@ -466,6 +469,182 @@ void testLookaheadPromotion()
     require(false, "Lookahead should promote a witnessed prefix over a higher-ranked unconfirmed prefix");
 }
 
+void testHybridSampling()
+{
+    const auto problem = circularProblem(4);
+    TransferCache cache(problem, 512);
+    const auto parent = PartialRoute::start(cache.problem(), 0, DeltaVPolicy::Strict);
+    require(parent.has_value(), "Expected a valid cache-owned prefix");
+    auto config = singlePath();
+    config.samplesPerDestination = 32;
+    config.hybridRefinementPercent = 50;
+    config.hybridRefinementRegions = 3;
+    config.hybridExplorationPercent = 50;
+    TimingSampler sampler(7);
+    const auto batch = beam_detail::HybridTiming::expand(cache, *parent, {1, 2, 3}, sampler, config, 0.5, 96, {});
+    require(batch.broadCalls == 48 && batch.refinementCalls > 0 && batch.refinementCalls <= 48 &&
+            batch.refinedRegions == 3, "Broad and refined work must share the allowance across multiple regions");
+    std::set<std::tuple<int, double, double>> checked;
+    for (const auto &proposal : batch.proposals)
+    {
+        if (!proposal.extension.route) { continue; }
+        const auto &child = *proposal.extension.route;
+        const auto &timing = proposal.timing;
+        require(checked.emplace(child.prefix().visitingOrder.back(), timing.departureDays, timing.flightDays).second &&
+                timing.departureDays >= parent->arrivalDays() && timing.flightDays >= problem.minTimeOfFlight &&
+                child.arrivalDays() <= problem.maxTotalTime - 2 * problem.minTimeOfFlight,
+                "Only unique, chronological legs with enough time left may be offered");
+    }
+    require(checked.size() > 48, "Refinement should supply additional validated options on the circular fixture");
+
+    config.hybridRefinementPercent = 0;
+    TimingSampler broadOnlySampler(7);
+    const auto broadOnly = beam_detail::HybridTiming::expand(cache, *parent, {1, 2, 3}, broadOnlySampler,
+                                                           config, 0.5, 96, {});
+    require(broadOnly.refinedRegions == 0 && broadOnly.refinementCalls == 0, "A zero refinement share stays broad");
+}
+
+void testHybridBudget()
+{
+    auto config = singlePath();
+    config.timingStrategy = BeamTimingStrategy::Hybrid;
+    config.maxEvaluations = 4;
+    const auto problem = circularProblem(3);
+    const auto complete = BeamSearch::run(problem, config);
+    require(complete.bestSolution && complete.stats.hybridBroadEvaluations == 2 &&
+            complete.stats.validationEvaluations == 2 && complete.stats.evaluationsAttempted == 4 &&
+            SolutionEvaluator::evaluate(problem, *complete.bestSolution, config.policy).isFeasible(),
+            "Only the independent evaluator may confirm a completed route");
+
+    config.maxEvaluations = 3;
+    const auto unverified = BeamSearch::run(problem, config);
+    require(!unverified.bestSolution && unverified.stats.completeRoutesFound == 1 &&
+            unverified.stats.validationEvaluations == 0 && unverified.stop == BeamSearchStop::EvaluationLimit,
+            "A complete prefix without enough validation budget must not be reported as feasible");
+
+    auto invalid = problem;
+    for (auto &tomato : invalid.tomatoes) { tomato.a = 0.0; }
+    config.maxEvaluations = 1;
+    const auto failed = BeamSearch::run(invalid, config);
+    require(failed.stats.evaluationsAttempted == 1 && failed.stats.transferFailures == 1 &&
+            failed.stats.hybridCacheMisses == 1, "A failed cached solve must still be charged");
+}
+
+void testHybridCache()
+{
+    auto problem = circularProblem(2);
+    problem.maxTotalTime = problem.startTime + problem.minTimeOfFlight;
+    auto config = singlePath();
+    config.timingStrategy = BeamTimingStrategy::Hybrid;
+    config.samplesPerDestination = 8;
+    config.restartCount = 2;
+    config.maxEvaluations = 20;
+    const auto result = BeamSearch::run(problem, config);
+    const auto &stats = result.stats;
+    require(result.bestSolution && stats.completeFeasibleRoutes == 3 && stats.validationEvaluations == 3 &&
+            stats.hybridBroadEvaluations == 2 && stats.hybridRefinementEvaluations == 0 &&
+            stats.hybridRefinedRegions == 3 && stats.hybridCacheHits >= 4 && stats.hybridCacheMisses == 2 &&
+            stats.evaluationsAttempted == 5 && stats.successfulExtensions == 3 && stats.hybridDuplicateProposals > 0,
+            "Known exact timings are free on replay, unique per parent, and independently validated");
+
+    config.hybridCacheCapacity = 0;
+    const auto disabled = BeamSearch::run(problem, config);
+    require(disabled.bestSolution && disabled.stats.hybridCacheHits == 0 &&
+            disabled.stats.evaluationsAttempted > stats.evaluationsAttempted &&
+            disabled.stats.successfulExtensions == stats.successfulExtensions,
+            "With storage disabled, refinement outputs still reach the route checks without a second solve");
+}
+
+void testHybridClassification()
+{
+    auto problem = circularProblem(2);
+    problem.tomatoes[1].i = 0.2;
+    problem.maxTotalTime = problem.startTime + problem.minTimeOfFlight;
+    auto config = singlePath();
+    config.timingStrategy = BeamTimingStrategy::Hybrid;
+    const auto initial = BeamSearch::run(problem, config);
+    const int source = initial.stats.startingTomatoes.front();
+    const auto raw = TransferSolver::evaluate(problem, source, 1 - source, problem.startTime, problem.minTimeOfFlight);
+    require(raw.status == TransferStatus::Ok && raw.deltaVMps > 1e-6, "Expected a nonzero finite reference cost");
+
+    problem.maxDeltaV = raw.deltaVMps;
+    problem.maxExceptionDeltaV = raw.deltaVMps;
+    const auto normal = BeamSearch::run(problem, config);
+    require(normal.bestSolution && normal.stats.byDepth.front().normalExtensions == 1 &&
+            normal.stats.byDepth.front().retainedExceptionsUsed == 0, "The exact normal ceiling is inclusive");
+
+    problem.maxDeltaV = 0.0;
+    problem.maxExceptions = 1;
+    problem.maxExceptionDeltaV = raw.deltaVMps - 5e-7;
+    const auto strict = BeamSearch::run(problem, config);
+    config.policy = DeltaVPolicy::PublishedEvaluator;
+    const auto published = BeamSearch::run(problem, config);
+    require(!strict.bestSolution && strict.stats.deltaVRejections == 1 && published.bestSolution &&
+            published.stats.byDepth.front().exceptionExtensions == 1 &&
+            published.stats.byDepth.front().retainedExceptionsUsed == 1,
+            "Policy tolerance should change the exception classification only under the published evaluator");
+    problem.maxExceptions = 0;
+    const auto exceeded = BeamSearch::run(problem, config);
+    require(!exceeded.bestSolution && exceeded.stats.exceptionBudgetRejections == 1,
+            "An accepted physical exception still requires a route allowance");
+}
+
+void testHybridReplay()
+{
+    const auto problem = circularProblem();
+    auto config = singlePath();
+    config.timingStrategy = BeamTimingStrategy::Hybrid;
+    config.selectionStrategy = BeamSelectionStrategy::Lookahead;
+    config.seed = 7;
+    config.beamWidth = 3;
+    config.destinationsPerRoute = 4;
+    config.samplesPerDestination = 16;
+    config.maxEvaluations = 1000;
+    const auto first = BeamSearch::run(problem, config);
+    const auto second = BeamSearch::run(problem, config);
+    const auto &s = first.stats;
+    require(first.bestSolution && second.bestSolution &&
+            first.bestSolution->visitingOrder == second.bestSolution->visitingOrder &&
+            first.bestSolution->departureTimes == second.bestSolution->departureTimes &&
+            first.bestSolution->timesOfFlight == second.bestSolution->timesOfFlight &&
+            s.hybridCacheHits == second.stats.hybridCacheHits &&
+            s.hybridRefinementEvaluations == second.stats.hybridRefinementEvaluations &&
+            s.evaluationsAttempted == second.stats.evaluationsAttempted &&
+            s.evaluationsAttempted <= config.maxEvaluations && first.stop == second.stop,
+            "Fixed seed must reproduce hybrid outcomes and counters");
+    const auto construction = s.hybridBroadEvaluations + s.hybridRefinementEvaluations + s.lookaheadEvaluations;
+    require(s.hybridRefinementEvaluations > 0 && s.lookaheadEvaluations > 0 &&
+            construction + s.validationEvaluations == s.evaluationsAttempted &&
+            construction + s.hybridCacheDenials == s.hybridCacheMisses,
+            "Broad sampling, refinement, lookahead and independent validation must reconcile");
+    for (const auto &depth : s.byDepth)
+    {
+        require(depth.normalExtensions == depth.accepted && depth.exceptionExtensions == 0 &&
+                depth.retainedExceptionsUsed == 0, "All extensions should be normal on the circular fixture");
+    }
+}
+
+void testHybridBaseline()
+{
+    const auto problem = circularProblem();
+    auto config = singlePath();
+    require(config.timingStrategy == BeamTimingStrategy::Baseline, "Uniform timing is still the default");
+    const auto original = BeamSearch::run(problem, config);
+    config.hybridRefinementPercent = 100;
+    config.hybridRefinementRegions = 0;
+    config.hybridExplorationPercent = 101;
+    const auto explicitBaseline = BeamSearch::run(problem, config);
+    require(original.bestSolution && explicitBaseline.bestSolution &&
+            original.bestSolution->visitingOrder == explicitBaseline.bestSolution->visitingOrder &&
+            original.bestSolution->departureTimes == explicitBaseline.bestSolution->departureTimes &&
+            original.bestSolution->timesOfFlight == explicitBaseline.bestSolution->timesOfFlight &&
+            original.stats.evaluationsAttempted == explicitBaseline.stats.evaluationsAttempted &&
+            explicitBaseline.stats.hybridCacheMisses == 0, "Hybrid-only settings must not affect legacy timing");
+    config.timingStrategy = BeamTimingStrategy::Hybrid;
+    require(BeamSearch::run(problem, config).stop == BeamSearchStop::InvalidConfig,
+            "A hybrid search must reserve broad probes and reject an invalid exploration percentage");
+}
+
 struct TestCase
 {
     std::string_view name;
@@ -486,7 +665,13 @@ constexpr TestCase cases[] = {
     {"temporal_replay", testTemporalReplay},
     {"lookahead_budget", testLookaheadBudget},
     {"lookahead_replay", testLookaheadReplay},
-    {"lookahead_promotion", testLookaheadPromotion}
+    {"lookahead_promotion", testLookaheadPromotion},
+    {"hybrid_sampling", testHybridSampling},
+    {"hybrid_budget", testHybridBudget},
+    {"hybrid_cache", testHybridCache},
+    {"hybrid_classification", testHybridClassification},
+    {"hybrid_replay", testHybridReplay},
+    {"hybrid_baseline", testHybridBaseline}
 };
 }
 

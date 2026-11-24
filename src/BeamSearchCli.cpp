@@ -55,6 +55,11 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
             config.timingStrategy = BeamTimingStrategy::Stratified;
             return true;
         }
+        if (value == "hybrid")
+        {
+            config.timingStrategy = BeamTimingStrategy::Hybrid;
+            return true;
+        }
         return false;
     }
     if (name == "--selection")
@@ -94,7 +99,11 @@ bool readOption(std::string_view name, std::string_view value, BeamSearchConfig 
         {"--samples", &BeamSearchConfig::samplesPerDestination},
         {"--max-evaluations", &BeamSearchConfig::maxEvaluations},
         {"--restarts", &BeamSearchConfig::restartCount},
-        {"--lookahead-probes", &BeamSearchConfig::lookaheadProbes}
+        {"--lookahead-probes", &BeamSearchConfig::lookaheadProbes},
+        {"--hybrid-refinement-percent", &BeamSearchConfig::hybridRefinementPercent},
+        {"--hybrid-refinement-regions", &BeamSearchConfig::hybridRefinementRegions},
+        {"--hybrid-exploration-percent", &BeamSearchConfig::hybridExplorationPercent},
+        {"--hybrid-cache-capacity", &BeamSearchConfig::hybridCacheCapacity}
     };
     for (const auto &option : sizeOptions)
     {
@@ -110,9 +119,11 @@ void printUsage(std::ostream &out)
 {
     out << "Usage: keplerian_tsp --beam-search [--input FILE] [--beam-width N] [--destinations N]\n"
         << "       [--samples N] [--seed N] [--max-evaluations N] [--restarts N] [--policy strict|published]\n"
-        << "       [--timing baseline|stratified] [--selection baseline|temporal|lookahead]\n"
+        << "       [--timing baseline|stratified|hybrid] [--selection baseline|temporal|lookahead]\n"
         << "       [--arrival-bin-days DAYS] [--lookahead-probes N]\n"
-        << "       [--diagnostics]\n";
+        << "       [--hybrid-refinement-percent N] [--hybrid-refinement-regions N]\n"
+        << "       [--hybrid-exploration-percent N] [--hybrid-cache-capacity N]\n"
+        << "       [--diagnostics] [--transfer-stats]\n";
 }
 
 void printDiagnostics(const BeamSearchStats &stats)
@@ -171,6 +182,9 @@ void printResult(const BeamSearchResult &result)
     const auto &stats = result.stats;
     const char *selection = config.selectionStrategy == BeamSelectionStrategy::Lookahead ? "lookahead" :
                             config.selectionStrategy == BeamSelectionStrategy::Temporal ? "temporal" : "baseline";
+    const bool hybrid = config.timingStrategy == BeamTimingStrategy::Hybrid;
+    const char *timing = hybrid ? "hybrid" :
+                         config.timingStrategy == BeamTimingStrategy::Stratified ? "stratified" : "baseline";
     using std::cout;
     cout << "Seed: " << config.seed << "\n"
          << "Beam width: " << config.beamWidth << "\n"
@@ -178,8 +192,7 @@ void printResult(const BeamSearchResult &result)
          << "Timing samples per destination: " << config.samplesPerDestination << "\n"
          << "Requested restarts: " << config.restartCount << "\n"
          << "Delta-V policy: " << (config.policy == DeltaVPolicy::Strict ? "strict" : "published") << "\n"
-         << "Timing strategy: " << (config.timingStrategy == BeamTimingStrategy::Stratified ? "stratified" : "baseline")
-         << "\n"
+         << "Timing strategy: " << timing << "\n"
          << "Selection strategy: " << selection << "\n"
          << "Maximum arrival bin width (days): " << config.arrivalBinDays << "\n"
          << "Lookahead probes per prefix: " << config.lookaheadProbes << "\n"
@@ -198,13 +211,29 @@ void printResult(const BeamSearchResult &result)
          << "Lookahead witnesses reused: " << stats.lookaheadReused << "\n"
          << "Lookahead candidates promoted: " << stats.lookaheadPromoted << "\n"
          << "Lookahead Delta-V rejections: " << stats.lookaheadDeltaVRejections << "\n"
-         << "Lookahead exception-budget rejections: " << stats.lookaheadExceptionBudgetRejections << "\n"
-         << "Accepted orbital transfers: " << stats.successfulExtensions - stats.lookaheadReused + stats.lookaheadAccepted
-         << "\n"
-         << "Rejected orbital transfers: "
-         << stats.evaluationsAttempted - stats.validationEvaluations -
-            (stats.successfulExtensions - stats.lookaheadReused + stats.lookaheadAccepted) << "\n"
-         << "Successful extensions: " << stats.successfulExtensions << "\n"
+         << "Lookahead exception-budget rejections: " << stats.lookaheadExceptionBudgetRejections << "\n";
+    if (hybrid)
+    {
+        cout << "Hybrid refinement percent: " << config.hybridRefinementPercent << "\n"
+             << "Hybrid refinement regions per prefix: " << config.hybridRefinementRegions << "\n"
+             << "Hybrid exploration percent: " << config.hybridExplorationPercent << "\n"
+             << "Hybrid cache capacity: " << config.hybridCacheCapacity << "\n"
+             << "Broad orbital evaluations: " << stats.hybridBroadEvaluations << "\n"
+             << "Refinement orbital evaluations: " << stats.hybridRefinementEvaluations << "\n"
+             << "Refinement regions explored: " << stats.hybridRefinedRegions << "\n"
+             << "Duplicate proposals skipped: " << stats.hybridDuplicateProposals << "\n"
+             << "Cache hits: " << stats.hybridCacheHits << "\n"
+             << "Cache misses: " << stats.hybridCacheMisses << "\n"
+             << "Cache budget denials: " << stats.hybridCacheDenials << "\n";
+    }
+    else
+    {
+        const auto accepted = stats.successfulExtensions - stats.lookaheadReused + stats.lookaheadAccepted;
+        cout << "Accepted orbital transfers: " << accepted << "\n"
+             << "Rejected orbital transfers: " << stats.evaluationsAttempted - stats.validationEvaluations - accepted
+             << "\n";
+    }
+    cout << "Successful extensions: " << stats.successfulExtensions << "\n"
          << "Rejected extensions: " << stats.rejectedExtensions << "\n"
          << "Solver failures: " << stats.transferFailures << "\n"
          << "Delta-V rejections: " << stats.deltaVRejections << "\n"
@@ -239,6 +268,27 @@ void printResult(const BeamSearchResult &result)
     printValues("Departure days:", solution.departureTimes);
     printValues("Flight days:", solution.timesOfFlight);
 }
+
+void printTransferStats(const BeamSearchStats &stats)
+{
+    std::size_t normal = 0, exception = 0;
+    for (const auto &depth : stats.byDepth)
+    {
+        normal += depth.normalExtensions;
+        exception += depth.exceptionExtensions;
+    }
+    std::cout << "\nAccepted normal extensions: " << normal << "\n"
+              << "Accepted exception extensions: " << exception << "\n"
+              << "\nExceptions by child depth (CSV)\n"
+              << "child_depth,normal,exception,retained,total_exceptions_spent,at_exception_limit,refinement_failures\n";
+    for (std::size_t i = 0; i < stats.byDepth.size(); ++i)
+    {
+        const auto &d = stats.byDepth[i];
+        std::cout << i + 2 << ',' << d.normalExtensions << ',' << d.exceptionExtensions << ',' << d.retained
+                  << ',' << d.retainedExceptionsUsed << ',' << d.retainedAtExceptionLimit
+                  << ',' << d.refinementSolverFailures << '\n';
+    }
+}
 }
 
 int runBeamSearchExperiment(int argc, char *argv[])
@@ -251,11 +301,18 @@ int runBeamSearchExperiment(int argc, char *argv[])
     BeamSearchConfig config;
     std::string input = "data/easy.kttsp";
     bool diagnostics = false;
+    bool transferStats = false;
     for (int i = 0; i < argc;)
     {
         if (std::string_view(argv[i]) == "--diagnostics")
         {
             diagnostics = true;
+            ++i;
+            continue;
+        }
+        if (std::string_view(argv[i]) == "--transfer-stats")
+        {
+            transferStats = true;
             ++i;
             continue;
         }
@@ -285,6 +342,10 @@ int runBeamSearchExperiment(int argc, char *argv[])
     if (diagnostics)
     {
         printDiagnostics(result.stats);
+    }
+    if (transferStats || config.timingStrategy == BeamTimingStrategy::Hybrid)
+    {
+        printTransferStats(result.stats);
     }
     return 0;
 }

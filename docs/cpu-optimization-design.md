@@ -418,6 +418,86 @@ ctest --test-dir build/transfer-x64 --output-on-failure
 
 The CSV records actual calls, hits, misses, budget denials, classification counts, minimum Delta-V and best accepted timing for every case. On non-Windows builds use the benchmark executable in the build root. The benchmark and explorer targets are enabled by `KTTSP_ENABLE_TRANSFER_SOLVER`.
 
+### Phase 5K hybrid beam timing
+
+`--timing hybrid` uses the existing beam selector and route validator. Each prefix starts with an orbital allowance of at most `destinations × samples`, clipped to the attempt's remaining construction budget. The default assigns up to 25% of that allowance to refinement and distributes the broad probes across shuffled unvisited targets in round-robin order. The broad phase uses local stratified timing and a configurable share of full-window uniform draws, 25% by default. Clipping the allowance at the end of an attempt still spreads the remaining proposals over destinations.
+
+A refinement guide is the lowest finite Delta-V sampled for a destination and departure-wait bin. The bins are `[0, 0.25)`, `[0.25, 1)`, `[1, 4)`, and `[4, ∞)` days after the parent's arrival. Rank the guides by measured Delta-V, which favors normal legs before exceptions and can retain promising over-ceiling guides. Choose guides first with distinct destinations and distinct wait bins, then with new destinations, then fill any slots. The default maximum is four regions per prefix. Split the quota across planned slots. A lone candidate receives just its slice and unused slices are left unspent.
+
+Run `TransferWindowExplorer` in a box around each selected timing with half-width `max(minimum flight, local slack / 4)` days. It uses a 2-by-2 coarse grid and a bounded point allowance per region. The box starts no earlier than the prefix's arrival and ends by the mission deadline minus the minimum flight durations of unfinished legs. The existing route checks also enforce visit-once, chronology, the minimum duration of the new leg, and the remaining exception allowance. Broad and refined extensions share the same checks. The prefix deduplicates exact destination and timing keys, including a carried lookahead witness. Distinct timings for an endpoint still compete under the existing beam selector.
+
+One cache spans the hybrid run. A funded miss costs one orbital call even if the solver fails. Cache hits and already evaluated refinement results require zero additional calls. The optional lookahead selector shares the cache and the construction allowance. The existing reserve and independent `SolutionEvaluator` validation remain in force. For hybrid, broad calls plus refinement calls plus lookahead calls plus independent validation calls equal total orbital calls. Cache misses include denied requests. The `--transfer-stats` flag prints accepted normal and exception extensions and total exceptions spent by all retained prefixes at each child depth. Hybrid mode prints that section by default. Its timing histogram with `--diagnostics` covers paid broad calls.
+
+With `D` candidate destinations, there are at most `4D` guide records per prefix, so ranking takes `O(D log(D+1))`. For `P` broad and refinement point attempts and a cache capacity of `C`, point lookup and cell ordering take `O(P (log(P+1) + log(C+1)))` work alongside the orbital solves. At most `P` partial routes can be materialized temporarily for a prefix. Copying one costs `O(N)` for `N` tomatoes and the existing beam selector adds pruning work.
+
+#### Matched ESA easy runs
+
+The Windows x64 Release runs used strict Delta-V limits, baseline beam selection, width 12, 24 destinations, 16 samples, no restarts, and seeds 0, 1, and 7. The hybrid settings used four regions per prefix and 25% full-window broad exploration. We tested refinement shares of 25% and 10%. A configured cap includes 48 reserved validation calls. No run completed a route, so observed work was construction alone. The reported depths are the numbers of tomatoes visited.
+
+| Actual calls per run | Seed or seeds | Uniform depth | Stratified depth | Hybrid 25% depth | Hybrid 10% depth |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 24,000 | 0 / 1 / 7 | 7 / 7 / 7 | 7 / 7 / 7 | 7 / 7 / 7 | 7 / 7 / 7 |
+| 48,000 | 0 / 1 / 7 | 12 / 12 / 12 | 12 / 12 / 12 | 12 / 12 / 12 | 12 / 12 / 12 |
+| 56,064 | 0 | 14 | 14 | 14 | 14 |
+| 57,216 | 1 | 13 | 14 | 14 | 14 |
+| 55,680 | 7 | 13 | 14 | 14 | 13 |
+| 60,000 | 0 / 1 / 7 | frontier exhausted earlier | 14 / 14 / 14 | 15 / 14 / 15 | 15 / 15 / 14 |
+
+The middle three rows re-run all strategies at each seed's actual uniform frontier cutoff. The three 60,000-call entries for hybrid 10% and the three for hybrid 25% each gained one visit over stratified timing on two seeds. Those gains did not persist for hybrid 25% at the longer matched checkpoints below.
+
+| 48,000 calls per seed | Accepted normal / exception across seeds | Same-endpoint pruned | Retained | Refinement calls | Cache hits / misses | Median seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uniform | 695 / 15,837 | 8,917 | 378 | 0 | cache unused | 0.221 |
+| Stratified | 776 / 20,389 | 11,902 | 396 | 0 | cache unused | 0.229 |
+| Hybrid 25% | 4,250 / 38,602 | 25,799 | 396 | 36,000 | 598 / 145,500 | 0.276 |
+| Hybrid 10% | 2,094 / 26,190 | 15,715 | 395 | 14,250 | 589 / 145,500 | 0.250 |
+
+The misses for each hybrid row include 1,500 local quota denials and 144,000 actual calls. The two hybrid shares skipped 573 and 562 repeated exact proposals at this checkpoint, respectively. Candidate counts describe accepted timings, and multiple timings can serve one endpoint. Hybrid 25% more than doubled endpoint pruning relative to stratified sampling while retaining the same number of prefixes. The extra normal timings did not consistently create new viable continuations.
+
+| Child depth at 48,000 calls | Uniform mean spent | Stratified mean spent | Hybrid 25% mean spent | Hybrid 10% mean spent |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 1.31 | 1.25 | 0.92 | 1.19 |
+| 8 | 3.86 | 2.78 | 2.69 | 2.72 |
+| 10 | 4.75 | 3.75 | 3.67 | 3.78 |
+| 12 | 5.00 | 4.42 | 4.28 | 4.31 |
+
+The means pool retained prefixes over the three seeds. At depth 12, the counts at the five-exception limit were 18/18 for uniform, 20/36 for stratified, 17/36 for hybrid 25%, and 21/35 for hybrid 10%. Hybrid saved some exceptions on average and many histories still reached the cap early.
+
+At a 200,000-call construction allowance every run exhausted its sampled frontier. The actual calls and depths were as follows.
+
+| Method | Seed 0 calls / depth | Seed 1 calls / depth | Seed 7 calls / depth |
+| --- | ---: | ---: | ---: |
+| Uniform | 56,064 / 14 | 57,216 / 13 | 55,680 / 13 |
+| Stratified | 73,344 / 18 | 62,592 / 15 | 70,656 / 17 |
+| Hybrid 25% | 76,800 / 20 | 73,728 / 19 | 77,952 / 19 |
+| Hybrid 10% | 91,392 / 22 | 60,672 / 16 | 64,512 / 16 |
+
+At exactly the stratified cutoffs of 73,344, 62,592, and 70,656 calls, the 25% hybrid tied stratified depth on all three seeds at 18, 15, and 17. At the earlier matched 60,672-call checkpoint on seed 1, depths were 14, 15, and 16 for stratified, hybrid 25%, and hybrid 10%. At 64,512 calls on seed 7 they were 15, 15, and 16. End-to-end time for the long frontier runs was 0.240–0.469 s. The fixed 24,000 and 48,000 runs stopped at the evaluation allowance. At 60,000, the 10% hybrid exhausted its frontier on seed 1 and the other matched runs stopped at the allowance. No configuration yielded an independently feasible route or a completion time.
+
+The next experiment should separate transfer discovery from route construction. Build a fixed sparse graph of exact arcs and direct its discovery allowance toward tomatoes and epochs with few normal incoming or outgoing options. Solve the sampled route problem with constraint propagation over unused tomatoes and compatible epochs, prioritizing the hardest remaining visits. Keep the orbital budget and final validation shared. This would test global connectivity and exception allocation, which the current per-prefix refinement cannot see. A failure on a finite graph would still leave unsampled timings open.
+
+#### Reproduce Phase 5K
+
+Use the backend-enabled build and UCRT64 runtime PATH from [README](../README.md#windows-x64-build-with-transfersolver). The beam flag `--timing baseline` selects uniform timing. The hybrid-only flags below can be omitted for the two existing strategies.
+
+```powershell
+$exe = './build/transfer-x64/keplerian_tsp.exe'
+foreach ($calls in 24000, 48000, 60000, 200000) {
+    foreach ($seed in 0, 1, 7) {
+        $common = @('--beam-search', '--input', 'data/easy.kttsp', '--policy', 'strict',
+            '--max-evaluations', ($calls + 48), '--seed', $seed, '--beam-width', 12,
+            '--destinations', 24, '--samples', 16, '--selection', 'baseline',
+            '--restarts', 0, '--diagnostics', '--transfer-stats')
+        foreach ($timing in 'baseline', 'stratified') { & $exe @common --timing $timing }
+        foreach ($percent in 10, 25) {
+            & $exe @common --timing hybrid --hybrid-refinement-percent $percent --hybrid-refinement-regions 4 --hybrid-exploration-percent 25
+        }
+    }
+}
+```
+
+To reproduce a cutoff row, use its listed actual calls as `$calls` and keep the matching seed. Check the reported actual calls before interpreting depth as a matched comparison.
+
 ## Search guidance for infeasible candidates
 
 Keep exploratory candidates separate from the feasible incumbent. Discard a structurally invalid decode that cannot be repaired. For structurally valid candidates with valid problem limits, use the per-leg statuses and raw costs to compute this lexicographic search key:
