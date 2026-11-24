@@ -239,6 +239,60 @@ Two prefixes can reach the same tomato at the same epoch with different visited 
 
 With capacity `C`, a cache lookup or insertion costs `O(log(C+1))` index work plus constant-time recency updates. Only a funded miss adds the orbital computation. Cache storage is `O(N+C)` for the owned orbits and entries. Graph insertion adds `O(log(V+1) + log(E+1))` index work and amortized constant-time storage append. Looking up the `k` eligible departures costs `O(log(E+1) + k)`. Reconstructing a supplied full route costs `O(N)` time and space, excluding optional independent orbital validation.
 
+### Phase 5H bounded graph search
+
+`--graph-search` runs a separate, opt-in depth-first search. The existing parser and beam modes keep their behavior. The graph shares one exact transfer cache over the immutable problem snapshot. A stack frame stores the current node, arrival epoch, remaining mission time, exceptions used, and an ordered list of alternative edges. A shared visited bit mask and an edge-ID path describe the live prefix. Moving down sets one bit and appends an edge. Moving back undoes that leg and advances the parent's next-edge cursor. Starting tomatoes are shuffled with the seed unless a single root is requested. Each root starts at the mission epoch without an orbital call.
+
+At a prefix, use the graph's departure index to find legs from its current tomato that depart at or after arrival. Reject visited targets and legs that exceed the remaining exception count. Reject arrivals that would leave less than the sum of minimum durations for the unfinished legs. When there are fewer eligible stored edges than the alternative cap, sample up to `--destinations` shuffled unvisited targets with up to `--samples` timings each. Use the existing timing sampler. Three out of every four proposals stratify extra flight time over the current per-leg slack share, which is remaining days divided by remaining legs minus the minimum flight time. Every fourth proposal samples the full available wait and flight window. The graph admits a new edge only after the exact cached solver result passes the selected policy and the leg's timing checks. Existing edge IDs can be followed without a cache lookup or an orbital call. An individually accepted edge may still be unusable in the current history.
+
+Rank eligible edges by normal class first, then earliest arrival, then edge ID. Within `--alternatives`, first offer up to half the slots rounded up to distinct destinations, then fill from the sorted list. This leaves room for several timings to the same tomato. When a state has no alternatives left, undo the last leg and resume the parent. The alternatives are fixed when a frame opens. Later frames can see graph insertions made by other routes. A large set of stored alternatives can suppress fresh sampling at a state, and depth-first traversal can spend many states close to one dead end.
+
+```text
+seed the random streams and create the capped cache and graph
+for each permitted root in seeded order
+    push the root and mark it visited
+    while the stack has a state and the limits permit
+        if this state is a complete path
+            reconstruct Solution and run independent validation
+            retain the fastest independently feasible route found
+        else on first opening the state
+            gather eligible stored edges and sample if needed
+            rank and save bounded alternatives
+        if another alternative exists, take it and push a child
+        otherwise pop the state and undo its incoming leg, if any
+```
+
+`--max-evaluations` counts actual cache misses that call the solver and every independent validation call. With at least twice the number of mission legs in the total allowance, construction leaves one full validation allowance in reserve. At smaller caps, construction can use the full allowance and a complete path is reported only if enough calls remain to validate it. Once construction runs out of orbital calls, search can still follow stored edges. Every reported complete route is reconstructed with exact recorded departures and durations, then checked directly by `SolutionEvaluator` under the same policy. The objective among verified routes is earliest final arrival. The state cap counts every opened prefix, including starts and complete paths. The backtrack cap counts undone legs over the run. Node and edge caps prevent construction from paying for a transfer it cannot store, and the cache has a separate LRU capacity. All counts are cumulative. Seeded replay is checked with the same executable and runtime environment.
+
+For `N` tomatoes, a visited-mask check or stack transition takes constant time, with only `O(N)` live frames. Let `R` be the number of stored edges returned by the departure index at a state, `P` the maximum number of timing proposals at that state, and `V`, `E`, and `C` the live graph-node, edge, and cache-entry counts. A state needs up to `O(N + log(E+1) + (R+P) log(R+P+1) + P log(V+E+C+1))` non-orbital work, including enumeration, duplicate checks, and ranking. Each funded miss has the cost of one orbital solve, and independent validation costs up to `N-1` more solves per complete path. Multiply the state work by the explored state count for a run bound. Space is `O(N A + V + E + C)` for `A` saved alternatives per frame, with `O(N + R + P)` temporary candidate storage at a single state. The search has no optimality or completeness guarantee.
+
+#### Matched ESA easy experiment
+
+Windows x64 Release, UCRT64 GCC 16.1.0, PyKEP C++ v2.6, strict Δv, 24 destinations, and 16 timing proposals. The beam comparator used Phase 5F's baseline ranking, stratified timing, width 12, and no restarts. Graph search retained up to 12 alternatives per state and allowed 10,000 states and 10,000 undone legs. Each pair used the same seed and configured orbital cap. The cap included 48 reserved calls for independent validation, resulting in exactly the same number of actual calls per pair. The algorithms use separate proposal streams. No run reached a complete path, so independent validation calls were zero and no run had a feasible completion time.
+
+| Actual calls each | Seed | Depth beam / graph | Beam accepted / rejected calls | Graph nodes / edges | Stored-edge traversals | Graph backtracks | Seconds beam / graph |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 48,000 | 0 | 12 / 11 | 6,989 / 41,011 | 3,073 / 1,536 | 9,881 | 9,993 | 0.229 / 0.126 |
+| 48,000 | 1 | 12 / 16 | 6,592 / 41,408 | 5,031 / 2,515 | 9,931 | 9,985 | 0.237 / 0.136 |
+| 48,000 | 7 | 12 / 16 | 7,584 / 40,416 | 3,573 / 1,786 | 9,861 | 9,987 | 0.226 / 0.119 |
+| 60,000 | 0 | 14 / 11 | 8,065 / 51,935 | 3,415 / 1,707 | 9,875 | 9,993 | 0.285 / 0.147 |
+| 60,000 | 1 | 14 / 16 | 6,694 / 53,306 | 5,723 / 2,861 | 9,931 | 9,985 | 0.278 / 0.167 |
+| 60,000 | 7 | 14 / 16 | 8,143 / 51,857 | 3,829 / 1,914 | 9,861 | 9,989 | 0.280 / 0.140 |
+
+Every beam run stopped at its construction allowance. Every graph run used its full construction allowance, then continued on stored edges until the 10,000-state limit. Each graph run recorded one cache miss per actual call, zero exact-query cache hits, and zero storage denials or cache evictions. Random timings rarely repeat bit-for-bit. Stored-edge traversals are the source of reuse here, while the deterministic reuse test shows that a repeated failed query in another history does hit the cache. Graph edges are unique, individually admissible transfers. Beam acceptance counts whole-prefix extension checks and measures a different event. Phase 5F beam diagnostics for seeds 0, 1, and 7 replayed identically apart from runtime. The Phase 5H graph seed 7 run at 60,000 calls did the same.
+
+Graph search reached deeper on seeds 1 and 7 at both budgets and fell behind on seed 0. It stayed at the same depths after 12,000 additional calls per seed. At 60,000 actual calls the graph runs rejected 314,408, 3,956,826, and 534,036 stored-edge encounters on exception budget, respectively. The same stored edge can fail this history check repeatedly without an additional solver call. The results support graph reuse under these budgets and leave full-route construction unresolved. They do not exceed the 18-tomato prefix reached in a longer Phase 5F beam run. A follow-up could measure whether reserving some sampling work for states with low usable graph connectivity reduces repeated traversal of the same dead ends.
+
+From the repository root with the backend-enabled build on the UCRT64 runtime PATH, run either command for each seed. Use `60048` instead of `48048` for the second checkpoint.
+
+```powershell
+$phase5hExe = './build/transfer-x64/keplerian_tsp.exe'
+foreach ($seed in 0, 1, 7) {
+    & $phase5hExe --beam-search --input data/easy.kttsp --seed $seed --max-evaluations 48048 --policy strict --beam-width 12 --destinations 24 --samples 16 --timing stratified --selection baseline --restarts 0
+    & $phase5hExe --graph-search --input data/easy.kttsp --seed $seed --max-evaluations 48048 --policy strict --destinations 24 --samples 16 --alternatives 12 --max-states 10000 --max-backtracks 10000 --max-edges 60048 --max-nodes 120145 --cache-capacity 60048
+}
+```
+
 ## Search guidance for infeasible candidates
 
 Keep exploratory candidates separate from the feasible incumbent. Discard a structurally invalid decode that cannot be repaired. For structurally valid candidates with valid problem limits, use the per-leg statuses and raw costs to compute this lexicographic search key:

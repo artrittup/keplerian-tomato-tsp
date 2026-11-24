@@ -29,7 +29,8 @@ class TransferGraph
 {
 public:
     // The cache must outlive this graph. Edge classifications use this graph's policy.
-    TransferGraph(TransferCache &cache, DeltaVPolicy policy, std::size_t maxEdges);
+    TransferGraph(TransferCache &cache, DeltaVPolicy policy, std::size_t maxEdges,
+                  std::size_t maxNodes = std::numeric_limits<std::size_t>::max());
 
     std::optional<TransferNodeId> addStart(std::size_t tomato);
     // Adds an evaluated, individually admissible leg. An already stored leg reuses its edge ID.
@@ -38,6 +39,7 @@ public:
 
     const std::vector<TransferGraphNode> &nodes() const noexcept { return nodes_; }
     const std::vector<TransferGraphEdge> &edges() const noexcept { return edges_; }
+    std::size_t capacityDenials() const noexcept { return capacityDenials_; }
 
     // Waiting is implicit. Return edges departing from the node's tomato at or after its arrival.
     std::vector<TransferEdgeId> departuresAfter(TransferNodeId node) const;
@@ -52,6 +54,8 @@ private:
     TransferCache &cache_;
     const DeltaVPolicy policy_;
     const std::size_t maxEdges_;
+    const std::size_t maxNodes_;
+    std::size_t capacityDenials_ = 0;
     std::vector<TransferGraphNode> nodes_;
     std::vector<TransferGraphEdge> edges_;
     std::map<std::pair<std::size_t, std::uint64_t>, TransferNodeId> nodeIndex_;

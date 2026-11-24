@@ -5,6 +5,7 @@
 
 #ifdef KTTSP_HAS_BEAM_SEARCH
 int runBeamSearchExperiment(int argc, char *argv[]);
+int runGraphSearchExperiment(int argc, char *argv[]);
 #endif
 
 int main(int argc, char *argv[])
@@ -15,6 +16,16 @@ int main(int argc, char *argv[])
         return runBeamSearchExperiment(argc - 2, argv + 2);
 #else
         std::cerr << "Beam search requires a build with KTTSP_ENABLE_TRANSFER_SOLVER=ON.\n";
+        return 1;
+#endif
+    }
+
+    if (argc > 1 && std::string(argv[1]) == "--graph-search")
+    {
+#ifdef KTTSP_HAS_BEAM_SEARCH
+        return runGraphSearchExperiment(argc - 2, argv + 2);
+#else
+        std::cerr << "Graph search requires a build with KTTSP_ENABLE_TRANSFER_SOLVER=ON.\n";
         return 1;
 #endif
     }

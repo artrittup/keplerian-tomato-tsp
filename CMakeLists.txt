@@ -36,11 +36,14 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     add_library(transfer_graph STATIC src/TransferCache.cpp src/TransferGraph.cpp)
     target_link_libraries(transfer_graph PUBLIC transfer_solver solution)
 
+    add_library(graph_search STATIC src/GraphSearch.cpp)
+    target_link_libraries(graph_search PUBLIC transfer_graph PRIVATE partial_route solution_evaluator)
+
     add_library(beam_search STATIC src/BeamSearch.cpp)
     target_link_libraries(beam_search PUBLIC partial_route)
-    target_sources(keplerian_tsp PRIVATE src/BeamSearchCli.cpp)
+    target_sources(keplerian_tsp PRIVATE src/BeamSearchCli.cpp src/GraphSearchCli.cpp)
     target_compile_definitions(keplerian_tsp PRIVATE KTTSP_HAS_BEAM_SEARCH)
-    target_link_libraries(keplerian_tsp PRIVATE beam_search)
+    target_link_libraries(keplerian_tsp PRIVATE beam_search graph_search)
 
     function(copy_pykep_runtime target)
         add_custom_command(TARGET ${target} POST_BUILD
@@ -90,6 +93,8 @@ if(BUILD_TESTING)
         target_include_directories(beam_search_tests PRIVATE src)
         add_executable(transfer_graph_tests tests/TransferGraphTests.cpp src/Problem.cpp)
         target_link_libraries(transfer_graph_tests PRIVATE transfer_graph partial_route)
+        add_executable(graph_search_tests tests/GraphSearchTests.cpp src/Problem.cpp)
+        target_link_libraries(graph_search_tests PRIVATE graph_search solution_evaluator)
         if(WIN32)
             # Give the app and each test executable its own DLL copy.
             set_target_properties(transfer_solver_tests PROPERTIES
@@ -107,7 +112,10 @@ if(BUILD_TESTING)
             set_target_properties(transfer_graph_tests PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transfer-graph-tests"
             )
-            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests)
+            set_target_properties(graph_search_tests PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/graph-search-tests"
+            )
+            foreach(test_target IN ITEMS transfer_solver_tests solution_evaluator_tests partial_route_tests beam_search_tests transfer_graph_tests graph_search_tests)
                 copy_pykep_runtime(${test_target})
             endforeach()
         endif()
@@ -135,6 +143,15 @@ if(BUILD_TESTING)
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
             )
         endforeach()
+        foreach(test_case IN ITEMS backtrack reuse visit_once exceptions replay limits validation)
+            add_test(NAME graph_search_${test_case} COMMAND graph_search_tests ${test_case}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp"
+            )
+        endforeach()
+        add_test(NAME graph_search_cli COMMAND keplerian_tsp --graph-search
+            --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
+        )
+        set_tests_properties(graph_search_cli PROPERTIES PASS_REGULAR_EXPRESSION "Orbital evaluations: 5 / 5")
         add_test(NAME beam_cli COMMAND keplerian_tsp --beam-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )

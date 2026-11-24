@@ -15,6 +15,13 @@ struct LegTiming
     double flightDays;
 };
 
+struct TimingWindow
+{
+    double openingDays;
+    double latestArrivalDays;
+    double minimumFlightDays;
+};
+
 enum class RouteExtensionStatus
 {
     Ok,
@@ -87,9 +94,14 @@ public:
     // Restrict extra flight time to one of the equal-width bands of the slack interval.
     std::optional<LegTiming> sampleStratified(const PartialRoute &route, double maxSlackDays,
                                              std::size_t band, std::size_t bands);
+    std::optional<LegTiming> sample(TimingWindow window, double maxSlackDays);
+    std::optional<LegTiming> sampleStratified(TimingWindow window, double maxSlackDays,
+                                             std::size_t band, std::size_t bands);
 
 private:
     std::optional<LegTiming> sampleWindow(const PartialRoute &route, double maxSlackDays,
+                                         std::size_t band, std::size_t bands);
+    std::optional<LegTiming> sampleWindow(TimingWindow window, double maxSlackDays,
                                          std::size_t band, std::size_t bands);
     double unitSample();
 

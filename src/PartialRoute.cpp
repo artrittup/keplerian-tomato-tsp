@@ -137,13 +137,41 @@ std::optional<LegTiming> TimingSampler::sampleStratified(const PartialRoute &rou
 std::optional<LegTiming> TimingSampler::sampleWindow(const PartialRoute &route, double maxSlackDays,
                                                     std::size_t band, std::size_t bands)
 {
-    if (route.remainingLegs() == 0 || !(maxSlackDays >= 0.0))
+    if (route.remainingLegs() == 0)
     {
         return std::nullopt;
     }
-    const double opening = route.arrivalDays();
-    const double latest = route.latestLegArrivalDays();
-    const double minimum = std::max(route.problem_->minTimeOfFlight, std::numeric_limits<double>::min());
+    return sampleWindow({route.arrivalDays(), route.latestLegArrivalDays(), route.problem_->minTimeOfFlight},
+                        maxSlackDays, band, bands);
+}
+
+std::optional<LegTiming> TimingSampler::sample(TimingWindow window, double maxSlackDays)
+{
+    return sampleWindow(window, maxSlackDays, 0, 0);
+}
+
+std::optional<LegTiming> TimingSampler::sampleStratified(TimingWindow window, double maxSlackDays,
+                                                        std::size_t band, std::size_t bands)
+{
+    if (band >= bands)
+    {
+        return std::nullopt;
+    }
+    return sampleWindow(window, maxSlackDays, band, bands);
+}
+
+std::optional<LegTiming> TimingSampler::sampleWindow(TimingWindow window, double maxSlackDays,
+                                                    std::size_t band, std::size_t bands)
+{
+    if (!(maxSlackDays >= 0.0) || !std::isfinite(window.openingDays) ||
+        !std::isfinite(window.latestArrivalDays) || !std::isfinite(window.minimumFlightDays) ||
+        window.minimumFlightDays < 0.0)
+    {
+        return std::nullopt;
+    }
+    const double opening = window.openingDays;
+    const double latest = window.latestArrivalDays;
+    const double minimum = std::max(window.minimumFlightDays, std::numeric_limits<double>::min());
     if (latest <= opening || opening + minimum > latest)
     {
         return std::nullopt;

@@ -13,8 +13,8 @@ bool validMissionTimes(const Problem &problem)
 }
 }
 
-TransferGraph::TransferGraph(TransferCache &cache, DeltaVPolicy policy, std::size_t maxEdges)
-    : cache_(cache), policy_(policy), maxEdges_(maxEdges)
+TransferGraph::TransferGraph(TransferCache &cache, DeltaVPolicy policy, std::size_t maxEdges, std::size_t maxNodes)
+    : cache_(cache), policy_(policy), maxEdges_(maxEdges), maxNodes_(maxNodes)
 {
 }
 
@@ -42,6 +42,11 @@ std::optional<TransferNodeId> TransferGraph::addStart(std::size_t tomato)
     const auto &problem = cache_.problem();
     if (tomato >= problem.tomatoes.size() || !validMissionTimes(problem))
     {
+        return std::nullopt;
+    }
+    if (nodes_.size() == maxNodes_ && nodeIndex_.count({tomato, transfer_detail::timeBits(problem.startTime)}) == 0)
+    {
+        ++capacityDenials_;
         return std::nullopt;
     }
     return indexNode(tomato, problem.startTime);
@@ -72,6 +77,14 @@ std::optional<TransferEdgeId> TransferGraph::addTransfer(const TransferQuery &qu
     }
     if (edges_.size() == maxEdges_)
     {
+        ++capacityDenials_;
+        return std::nullopt;
+    }
+    const std::size_t newNodes = (nodeIndex_.count({query.source, transfer_detail::timeBits(query.departureDays)}) == 0) +
+                                 (nodeIndex_.count({query.destination, transfer_detail::timeBits(arrival)}) == 0);
+    if (newNodes > maxNodes_ - nodes_.size())
+    {
+        ++capacityDenials_;
         return std::nullopt;
     }
     const auto transfer = cache_.evaluate(query, maxSolverCalls);

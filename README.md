@@ -55,7 +55,7 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **60 tests**, including eleven transfer graph and cache tests. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **68 tests**, including the transfer graph, cache, and bounded graph-search suites. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
 
@@ -76,6 +76,18 @@ Use `--selection temporal` to try arrival-bin selection and `--arrival-bin-days 
 Use `--selection lookahead` for exact one-step continuation probes. Set `--lookahead-probes N` to cap probes per shortlisted prefix. All calls share the same orbital budget. [Lookahead experiment](docs/cpu-optimization-design.md#constraint-guided-one-step-lookahead)
 
 The `transfer_graph` library provides an exact, capacity-limited transfer cache and sparse graph storage. It can reconstruct a supplied path. [Graph and cache design](docs/cpu-optimization-design.md#phase-5g-graph-and-cache-foundations)
+
+### Bounded graph search
+
+Graph search is opt-in and uses the same backend-enabled build and UCRT64 runtime. It can undo an earlier visit or timing decision, then try another stored edge. The parser remains the default when you pass no search flag.
+
+```powershell
+./build/transfer-x64/keplerian_tsp.exe --graph-search --input data/easy.kttsp --seed 7 --policy strict --max-evaluations 48048 --max-states 10000 --max-backtracks 10000 --max-edges 60048 --max-nodes 120145 --cache-capacity 60048 --destinations 24 --samples 16 --alternatives 12
+```
+
+The orbital cap includes independent validation of every reported complete route. The state and backtrack caps limit work on stored edges, which takes no orbital calls. Use `--policy published` for the existing published evaluator tolerance, `--start-tomato N` to fix a zero-based starting index, or `--graph-search --help` for all options.
+
+At 48,000 matched actual calls on ESA easy, graph search reached 11, 16, and 16 tomatoes for seeds 0, 1, and 7. The stratified beam baseline reached 12 on each seed. Neither mode found a complete route. [Matched runs and reproduction commands](docs/cpu-optimization-design.md#matched-esa-easy-experiment)
 
 <details>
 <summary>Preparing a PyKEP v2.6 package from source</summary>
