@@ -74,6 +74,8 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
     target_link_libraries(permutation_screen PRIVATE permutation_screening fixed_order_scheduler)
     add_executable(fragment_assemble src/FragmentAssemblyCli.cpp src/Problem.cpp)
     target_link_libraries(fragment_assemble PRIVATE fragment_assembly fixed_order_scheduler)
+    add_executable(cpu_baseline src/CpuBaselineCli.cpp src/Problem.cpp)
+    target_link_libraries(cpu_baseline PRIVATE fragment_assembly fixed_order_scheduler solution_evaluator)
 
     if(WIN32)
         copy_pykep_runtime(keplerian_tsp)
@@ -89,6 +91,10 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fragment-assembly"
         )
         copy_pykep_runtime(fragment_assemble)
+        set_target_properties(cpu_baseline PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cpu-baseline"
+        )
+        copy_pykep_runtime(cpu_baseline)
         set_target_properties(transfer_window_benchmark PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/window-benchmark"
         )
@@ -97,6 +103,7 @@ if(KTTSP_ENABLE_TRANSFER_SOLVER)
 endif()
 
 include(CTest)
+option(KTTSP_ENABLE_CPU_BASELINE_REPLAY "Enable the long ESA easy end-to-end CPU replay test" OFF)
 
 if(BUILD_TESTING)
     add_executable(problem_tests
@@ -242,6 +249,21 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" - 0 49 8 1 0
         )
         set_tests_properties(fragment_assembly_cli PROPERTIES PASS_REGULAR_EXPRESSION "Matrix calls: 49")
+        foreach(test_case IN ITEMS smoke fixture)
+            add_test(NAME cpu_baseline_${test_case} COMMAND "${CMAKE_COMMAND}"
+                "-DPROGRAM=$<TARGET_FILE:cpu_baseline>" "-DMODE=${test_case}"
+                "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}" "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cpu-baseline-tests"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CpuBaselineRegression.cmake"
+            )
+        endforeach()
+        if(KTTSP_ENABLE_CPU_BASELINE_REPLAY)
+            add_test(NAME cpu_baseline_easy_replay COMMAND "${CMAKE_COMMAND}"
+                "-DPROGRAM=$<TARGET_FILE:cpu_baseline>" -DMODE=replay
+                "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}" "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cpu-baseline-tests"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/CpuBaselineRegression.cmake"
+            )
+            set_tests_properties(cpu_baseline_easy_replay PROPERTIES LABELS long RUN_SERIAL TRUE TIMEOUT 300)
+        endif()
         add_test(NAME graph_search_cli COMMAND keplerian_tsp --graph-search
             --input "${CMAKE_CURRENT_SOURCE_DIR}/data/easy.kttsp" --max-evaluations 5 --seed 11
         )
