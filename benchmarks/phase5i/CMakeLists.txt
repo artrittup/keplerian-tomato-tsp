@@ -22,13 +22,14 @@ function(trace_replace variable before after)
     set(${variable} "${updated}" PARENT_SCOPE)
 endfunction()
 
+set(graph_source "${repo}/experiments/search/src/GraphSearch.cpp")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${repo}/src/TransferSolver.cpp" "${repo}/src/GraphSearch.cpp")
+    "${repo}/src/TransferSolver.cpp" "${graph_source}")
 file(READ "${repo}/src/TransferSolver.cpp" orbit)
 trace_replace(orbit "TransferSolver::evaluate(" "phase5i::evaluateOrbit(")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ObservedTransfer.cpp" "#include \"Measurement.hpp\"\n${orbit}")
 
-file(READ "${repo}/src/GraphSearch.cpp" graph)
+file(READ "${graph_source}" graph)
 string(REPLACE "\r\n" "\n" graph "${graph}")
 trace_replace(graph "budgetLimited_ = true;"
     "++phase5i::graphMetrics.budgetBlocks;\n                    budgetLimited_ = true;")

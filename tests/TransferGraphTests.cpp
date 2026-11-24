@@ -241,6 +241,35 @@ void testGraph(const char *)
     report(cache);
 }
 
+void testCacheIndex(const char *)
+{
+    TransferCache tree(circularProblem(), 2);
+    TransferCache hash(circularProblem(), 2, TransferCacheIndex::Hash);
+    const TransferQuery b{0, 1, 2.25, 0.25}, c{1, 2, 2.5, 0.25};
+    const TransferQuery failed{0, 99, 2.0, 0.25};
+    const TransferQuery positiveZero{0, 1, 0.0, 0.25}, negativeZero{0, 1, -0.0, 0.25};
+    const std::pair<TransferQuery, std::size_t> queries[] = {
+        {firstLeg, 0}, {firstLeg, 1}, {b, 2}, {firstLeg, 2}, {c, 3}, {b, 3}, {b, 4},
+        {failed, 5}, {failed, 5}, {positiveZero, 6}, {negativeZero, 7}, {negativeZero, 7},
+        {{0, 1, std::numeric_limits<double>::infinity(), 0.25}, 7},
+    };
+    for (const auto &[query, cap] : queries)
+    {
+        const auto a = tree.evaluate(query, cap), bResult = hash.evaluate(query, cap);
+        require(a.has_value() == bResult.has_value() &&
+                (!a || (a->status == bResult->status && a->deltaVMps == bResult->deltaVMps)),
+                "The hashed index must preserve exact results and budget denials");
+        const auto x = tree.stats(), y = hash.stats();
+        require(x.hits == y.hits && x.misses == y.misses && x.solverCalls == y.solverCalls &&
+                x.budgetDenials == y.budgetDenials && x.nonfiniteRequests == y.nonfiniteRequests &&
+                x.evictions == y.evictions && x.entries == y.entries,
+                "The hashed index must preserve LRU and orbital accounting");
+    }
+    const auto stats = hash.stats();
+    require(stats.solverCalls == 7 && stats.hits == 3 && stats.budgetDenials == 2 && stats.evictions == 5,
+            "Expected two denials, distinct signed-zero queries, and exact reuse after an orbital failure");
+}
+
 void testRouteConstraints(const char *path)
 {
     TransferCache circular(circularProblem(), 2);
@@ -277,7 +306,7 @@ struct TestCase
 constexpr TestCase cases[] = {
     {"reuse", testReuse}, {"timings", testTimings}, {"pairs", testPairs}, {"partial_routes", testPartialRoutes},
     {"failures", testFailures}, {"policies", testPolicies}, {"isolation", testIsolation}, {"budget", testBudget},
-    {"eviction", testEviction}, {"graph", testGraph}, {"route_constraints", testRouteConstraints}
+    {"eviction", testEviction}, {"cache_index", testCacheIndex}, {"graph", testGraph}, {"route_constraints", testRouteConstraints}
 };
 }
 

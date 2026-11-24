@@ -1,5 +1,6 @@
 #include "TransferSolver.hpp"
 
+#include "OrbitalDiagnostics.hpp"
 #include "Problem.hpp"
 
 #include <keplerian_toolbox/exceptions.hpp>
@@ -53,6 +54,9 @@ double distance(const array3D &a, const array3D &b)
 TransferResult TransferSolver::evaluate(const Problem &problem, std::size_t source,
                                         std::size_t destination, double departureDays, double flightDays)
 {
+    auto *const diagnostics = OrbitalDiagnostics::active;
+    if (diagnostics) { diagnostics->query(source, destination, departureDays, flightDays); }
+    OrbitalTimer total(diagnostics, OrbitalMetric::Solver);
     const double arrivalDays = departureDays + flightDays;
     const double flightSeconds = flightDays * secondsPerDay;
     if (source >= problem.tomatoes.size() || destination >= problem.tomatoes.size() ||
@@ -74,9 +78,12 @@ TransferResult TransferSolver::evaluate(const Problem &problem, std::size_t sour
     array3D rFrom{}, vFrom{}, rTo{}, vTo{};
     try
     {
+        OrbitalTimer setup(diagnostics, OrbitalMetric::PlanetSetup);
         const kep_toolbox::epoch epoch(problem.startTime);
         const kep_toolbox::planet::keplerian from(epoch, fromElements, moonMu, 0.0, 0.0, 0.0);
         const kep_toolbox::planet::keplerian to(epoch, toElements, moonMu, 0.0, 0.0, 0.0);
+        setup.pause();
+        OrbitalTimer propagation(diagnostics, OrbitalMetric::Propagation);
         from.eph(departureDays, rFrom, vFrom);
         to.eph(arrivalDays, rTo, vTo);
     }
@@ -117,6 +124,7 @@ TransferResult TransferSolver::evaluate(const Problem &problem, std::size_t sour
         return {TransferStatus::NumericalFailure, infinity};
     }
 
+    OrbitalTimer lambert(diagnostics, OrbitalMetric::Lambert);
     double best = infinity;
     for (int clockwise : {0, 1})
     {

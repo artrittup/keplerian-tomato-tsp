@@ -21,7 +21,7 @@ int usage(std::ostream &out, int code)
 {
     out << "Usage: fixed_order_schedule INSTANCE ORDER [--max-evaluations N] [--seed N]\n"
         << "       [--bands N] [--refinement-percent N] [--flight-scale DAYS] [--cache-capacity N]\n"
-        << "       [--output-prefix PATH]\n";
+        << "       [--cache-index tree|hash] [--output-prefix PATH]\n";
     return code;
 }
 
@@ -33,6 +33,11 @@ bool option(std::string_view name, std::string_view value, FixedOrderConfig &con
     if (name == "--refinement-percent") { return parse(value, config.refinementPercent); }
     if (name == "--flight-scale") { return parse(value, config.flightScaleDays); }
     if (name == "--cache-capacity") { return parse(value, config.cacheCapacity); }
+    if (name == "--cache-index" && (value == "tree" || value == "hash"))
+    {
+        config.cacheIndex = value == "hash" ? TransferCacheIndex::Hash : TransferCacheIndex::Tree;
+        return true;
+    }
     if (name == "--output-prefix") { output = value; return !output.empty(); }
     return false;
 }
@@ -125,6 +130,7 @@ int main(int argc, char *argv[])
               << "\nPolicy: strict\nMax evaluations per method: " << config.maxOrbitalCalls
               << "\nDeparture bands: " << config.departureBands << "\nRefinement percent: " << config.refinementPercent
               << "\nFlight scale (days): " << config.flightScaleDays << "\nCache capacity: " << config.cacheCapacity
+              << "\nCache index: " << (config.cacheIndex == TransferCacheIndex::Hash ? "hash" : "tree")
               << "\nDiscovery calls: " << result.discovery.solverCalls << "\nCache hits: " << result.discovery.hits
               << "\nCache misses: " << result.discovery.misses << "\nCache budget denials: " << result.discovery.budgetDenials
               << "\nDiscovery seconds: " << result.discoverySeconds << '\n'

@@ -328,7 +328,7 @@ FixedOrderExperiment FixedOrderScheduler::compare(const Problem &problem, const 
     }
 
     const auto start = Clock::now();
-    TransferCache cache(problem, config.cacheCapacity);
+    TransferCache cache(problem, config.cacheCapacity, config.cacheIndex);
     std::mt19937_64 random(config.seed);
     fixed_order_detail::TransferTable table(legs);
     result.coverage.resize(legs);

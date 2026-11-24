@@ -1,5 +1,6 @@
 #include "FixedOrderScheduler.hpp"
 #include "FragmentAssembly.hpp"
+#include "OrbitalDiagnostics.hpp"
 #include "SolutionEvaluator.hpp"
 
 #include <algorithm>
@@ -28,6 +29,8 @@ struct Config
     FixedOrderConfig scheduler{4000000, 32, 50, 2.0, 0, 32768};
     std::optional<double> flightCap = 8.0;
     std::size_t shortlist = 1;
+    fs::path trace;
+    bool profile = false;
 };
 
 template <class T>
@@ -70,6 +73,12 @@ Config readConfig(int argc, char *argv[])
         else if (flag == "--cache-capacity")
         {
             c.evidence.cacheCapacity = c.scheduler.cacheCapacity = number<std::size_t>(flag, value);
+        }
+        else if (flag == "--trace") { c.trace = value; }
+        else if (flag == "--profile" && (value == "on" || value == "off")) { c.profile = value == "on"; }
+        else if (flag == "--schedule-cache-index" && (value == "tree" || value == "hash"))
+        {
+            c.scheduler.cacheIndex = value == "hash" ? TransferCacheIndex::Hash : TransferCacheIndex::Tree;
         }
         else { throw std::invalid_argument("Unknown option " + std::string(flag)); }
     }
@@ -202,6 +211,7 @@ void printConfig(const Config &c, std::size_t count)
               << "\nconfig.shortlist=" << c.shortlist << "\nconfig.schedule_calls_per_method=" << c.scheduler.maxOrbitalCalls
               << "\nconfig.bands=" << c.scheduler.departureBands << "\nconfig.refinement_percent=" << c.scheduler.refinementPercent
               << "\nconfig.flight_scale=" << c.scheduler.flightScaleDays << "\nconfig.cache_capacity=" << c.evidence.cacheCapacity
+              << "\nconfig.schedule_cache_index=" << (c.scheduler.cacheIndex == TransferCacheIndex::Hash ? "hash" : "tree")
               << "\norbital.cap=" << totalCallCap(c, count - 1) << '\n';
 }
 
@@ -215,6 +225,11 @@ int solve(const Problem &problem, const fs::path &output, const Config &config, 
     const auto count = problem.tomatoes.size();
     const auto legs = count - 1;
     printConfig(config, count);
+    if (!config.trace.empty() && fs::absolute(output).lexically_normal() == fs::absolute(config.trace).lexically_normal())
+    {
+        throw std::invalid_argument("Trace and solution require separate output paths");
+    }
+    OrbitalDiagnostics diagnostics(config.profile, config.trace);
     const auto beginSampling = Clock::now();
     TransferEvidenceMatrix matrix(problem, config.evidence);
     TransferWindowBounds bounds;
@@ -231,6 +246,7 @@ int solve(const Problem &problem, const fs::path &output, const Config &config, 
     std::sort(ranked.begin(), ranked.end());
     ranked.resize(std::min(ranked.size(), config.shortlist));
     const auto assembled = Clock::now();
+    diagnostics.stage(OrbitalStage::Schedule);
 
     TransferCacheStats scheduling;
     std::size_t internalValidation = 0, feasible = 0, selected = 0;
@@ -285,18 +301,21 @@ int solve(const Problem &problem, const fs::path &output, const Config &config, 
         PendingExport pending(output);
         writeSchedule(pending.file, *best);
         const auto validating = Clock::now();
+        diagnostics.stage(OrbitalStage::FinalValidation);
         validation = validateFile(problem, pending.file);
         const auto validatedAt = Clock::now();
         validationTime = seconds(validating, validatedAt);
         exportTime = seconds(writing, validating);
         if (!validated(validation, legs) || *validation.missionCompletionDays != bestDays) { return "validation_failed"; }
         if (fs::exists(fs::symlink_status(output))) { throw std::runtime_error("Output already exists. Use a fresh path"); }
+        diagnostics.finish(std::cout);
         fs::rename(pending.file, output);
         exportTime += seconds(validatedAt);
         return "ok";
     }();
     const auto totalTime = seconds(start);
     const auto success = std::string_view(status) == "ok";
+    if (!success) { diagnostics.finish(std::cout); }
     std::cout << "status=" << status << '\n';
     if (success)
     {
@@ -318,7 +337,8 @@ void usage(std::ostream &out)
            "       cpu_baseline validate INSTANCE SCHEDULE\n"
            "Options: --assembly-seed N --timing-seed N --matrix-calls N --matrix-flight-days DAYS|full\n"
            "         --attempts N --repairs N --unknown N --shortlist N --schedule-calls N\n"
-           "         --bands N --refinement-percent N --flight-scale DAYS --cache-capacity N\n";
+           "         --bands N --refinement-percent N --flight-scale DAYS --cache-capacity N\n"
+           "         --schedule-cache-index tree|hash --trace FILE --profile on|off\n";
 }
 }
 

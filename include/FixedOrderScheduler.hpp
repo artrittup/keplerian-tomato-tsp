@@ -13,6 +13,7 @@ struct FixedOrderConfig
     double flightScaleDays = 2.0;
     std::uint64_t seed = 0;
     std::size_t cacheCapacity = 32768;
+    TransferCacheIndex cacheIndex = TransferCacheIndex::Tree;
 };
 
 enum class FixedOrderStop

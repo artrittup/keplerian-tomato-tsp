@@ -8,6 +8,20 @@ This project focuses on solving the Keplerian Tomato Traveling Salesperson Probl
 
 CUDA acceleration and interactive OpenGL visualization are planned. The current implementation runs on the CPU.
 
+## Project structure
+
+| Directory | Contents |
+| --- | --- |
+| `src/` and `include/` | CPU baseline, instance and solution models, orbital solver, transfer cache and evidence matrix, fragment assembly, scheduling, and strict validation |
+| `experiments/search/` | Beam search, graph search, and their partial-route and time-expanded graph support |
+| `experiments/order/` | Standalone experiment drivers for fixed-order scheduling, permutation screening, and fragment assembly |
+| `tests/` and `tests/fixtures/` | Unit and integration tests, orbital numerical references, and the independently generated CPU schedule |
+| `benchmarks/` | Benchmark source and build definitions |
+| `docs/` | Design notes, measured benchmark results, and reproduction commands |
+| `data/` | ESA easy instance and the order-only comparison baseline |
+
+Keep local builds and benchmark exports under `build/` or `results/`. Reviewed regression schedules live in `tests/fixtures/`.
+
 ## Build and testing
 
 Run these commands from the repository root in PowerShell. Put `cmake`, `ctest`, and `ninja` on your `PATH`. The verified Windows builds used CMake/CTest 4.4.4 and Ninja 1.13.2.
@@ -55,7 +69,7 @@ cmake --build build/transfer-x64
 ctest --test-dir build/transfer-x64 --output-on-failure
 ```
 
-`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **111 standard tests**. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
+`CMAKE_PREFIX_PATH` points to the PyKEP install prefix. You can instead set `keplerian_toolbox_DIR` to the directory containing `keplerian_toolbox-config.cmake`, typically `lib/cmake/keplerian_toolbox` under that prefix. Set `BOOST_INCLUDEDIR` to the directory that contains `boost/version.hpp` and `BOOST_LIBRARYDIR` to the directory containing the two Boost libraries. The `CMP0167` and Boost options select the legacy `FindBoost` module and the explicit static-library paths used in the verified build. This configuration runs **112 standard tests**. [CMake CMP0167](https://cmake.org/cmake/help/v4.0/policy/CMP0167.html)
 
 With the backend enabled, call `SolutionEvaluator::evaluate(problem, solution, policy)` to validate a complete route. Choose `DeltaVPolicy::Strict` or `DeltaVPolicy::PublishedEvaluator` for the leg limits. Both use the same structural checks. The result reports the scheduled completion time, per-leg costs and classifications, total accepted Delta-V, exception count, and the first failure.
 
@@ -72,6 +86,10 @@ $cpu = './build/transfer-x64/cpu-baseline/cpu_baseline.exe'
 ```
 
 The standard tests include a small end-to-end replay and strict validation of the tracked fixture. Configure with `-DKTTSP_ENABLE_CPU_BASELINE_REPLAY=ON` to register the full multi-million-call replay. The commands, configuration, file checksum, and benchmarking procedure are documented separately. [CPU baseline](docs/cpu-baseline.md)
+
+Use `--trace FILE` to capture exact orbital queries and `--profile on` to break down orbital and cache work. The default scheduler uses the tree cache index. Select `--schedule-cache-index hash` to compare the alternative. [CPU benchmarking and trace format](docs/cpu-benchmarking.md)
+
+The `cpu_baseline` target links the shared orbital and validation code with the matrix, assembler, and scheduler. The experimental commands below keep their existing executable names and options.
 
 ### Bounded beam-search experiment
 
